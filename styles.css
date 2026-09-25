@@ -425,3 +425,32 @@ input:focus {
 }
 .queue-empty-hint { margin-top: 8px; }
 .queue-empty-hint.hidden { display: none !important; }
+
+
+/* Checkbox rows (lobby + host pass-host setting) */
+.check-row {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0 4px;
+  padding: 12px 14px;
+  background: #fff;
+  border: var(--fat-border);
+  border-radius: 18px;
+  box-shadow: 3px 3px 0 #1a1a1a;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.35;
+}
+.check-row input {
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-top: 2px;
+  accent-color: var(--crayon-green);
+  flex-shrink: 0;
+  cursor: pointer;
+}
+.host-pass-row {
+  grid-column: 1 / -1;
+  margin: 4px 0 0;
+}

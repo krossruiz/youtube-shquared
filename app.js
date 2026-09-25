@@ -12,6 +12,8 @@ const els = {
   create: document.getElementById('create-btn'),
   join: document.getElementById('join-btn'),
   roomInput: document.getElementById('room-input'),
+  passHostCreate: document.getElementById('pass-host-create'),
+  passHostToggle: document.getElementById('pass-host-toggle'),
   copyLink: document.getElementById('copy-link-btn'),
   leave: document.getElementById('leave-btn'),
   renameForm: document.getElementById('rename-form'),
@@ -51,6 +53,10 @@ const state = {
   hostTick: null,
   toastTimer: null,
   advancing: false,
+  passHostOnLeave: true,
+  acceptingConnections: false,
+  recoveringHost: false,
+  recoverTimer: null,
 };
 
 function randomName() {
@@ -231,6 +237,170 @@ function playNextFromQueue() {
   });
   // safety if onReady never fires
   setTimeout(() => { state.advancing = false; }, 2000);
+}
+
+
+function settingsPayload() {
+  return { type: 'settings', passHostOnLeave: !!state.passHostOnLeave };
+}
+
+function emitSettings() {
+  if (state.role === 'host') broadcast(settingsPayload());
+}
+
+function syncPassHostUI() {
+  if (els.passHostToggle) els.passHostToggle.checked = !!state.passHostOnLeave;
+  if (els.passHostCreate && state.role !== 'host' && state.role !== 'guest') {
+    // lobby only — leave create checkbox alone while in room
+  }
+}
+
+function setPassHostOnLeave(on, { emit = true } = {}) {
+  state.passHostOnLeave = !!on;
+  syncPassHostUI();
+  if (emit && state.role === 'host') emitSettings();
+}
+
+function candidateIdsExcluding(deadHostId) {
+  const ids = new Set();
+  if (state.peer?.id && state.peer.id !== deadHostId) ids.add(state.peer.id);
+  for (const id of state.peers.keys()) {
+    if (id && id !== deadHostId) ids.add(id);
+  }
+  for (const id of state.connections.keys()) {
+    if (id && id !== deadHostId) ids.add(id);
+  }
+  return [...ids];
+}
+
+/** Deterministic pick so every peer elects the same successor without a coordinator. */
+function electHostId(candidateIds, salt) {
+  const sorted = [...new Set(candidateIds.filter(Boolean))].sort();
+  if (!sorted.length) return null;
+  let h = 0;
+  const s = `${salt || ''}|${sorted.join(',')}`;
+  for (let i = 0; i < s.length; i++) h = Math.imul(31, h) + s.charCodeAt(i) | 0;
+  return sorted[Math.abs(h) % sorted.length];
+}
+
+function ensureAcceptingConnections() {
+  if (!state.peer || state.acceptingConnections) return;
+  state.acceptingConnections = true;
+  state.peer.on('connection', (conn) => wireConnection(conn, 'guest'));
+}
+
+function becomeHost() {
+  if (!state.peer?.id) return;
+  clearTimeout(state.recoverTimer);
+  state.recoverTimer = null;
+  state.recoveringHost = false;
+  state.role = 'host';
+  state.hostId = state.peer.id;
+  // Demote everyone else in local roster
+  for (const [id, info] of state.peers) {
+    state.peers.set(id, { ...info, role: 'guest' });
+  }
+  ensureAcceptingConnections();
+  showRoom();
+  startHostTick();
+  history.replaceState(null, '', roomUrl(state.peer.id));
+  setStatus(state.connections.size ? `Host · ${state.connections.size} linked` : 'Host · waiting for reconnects', 'ok');
+  toast('You’re the new host — share the updated link');
+  // Push authoritative playback + queue as people reconnect (also on hello)
+  emitState();
+  emitQueue();
+  emitSettings();
+  renderPeers();
+}
+
+function rejoinNewHost(newHostId) {
+  if (!state.peer || !newHostId) return;
+  clearTimeout(state.recoverTimer);
+  state.recoverTimer = null;
+  state.recoveringHost = false;
+  state.role = 'guest';
+  state.hostId = newHostId;
+
+  for (const conn of state.connections.values()) {
+    try { conn.close(); } catch { /* ignore */ }
+  }
+  state.connections.clear();
+
+  // Refresh roles in roster
+  const next = new Map();
+  for (const [id, info] of state.peers) {
+    if (id === newHostId) next.set(id, { ...info, role: 'host' });
+    else if (id !== state.peer.id) next.set(id, { ...info, role: 'guest' });
+  }
+  if (!next.has(newHostId)) next.set(newHostId, { name: 'Host', role: 'host' });
+  state.peers = next;
+
+  showRoom();
+  history.replaceState(null, '', roomUrl(newHostId));
+  setStatus('Reconnecting to new host…', 'warn');
+  toast('Host left — rejoining the new host…');
+
+  const conn = state.peer.connect(newHostId, { reliable: true });
+  wireConnection(conn, 'host');
+  renderPeers();
+}
+
+function handleHostPass(newHostId, { reason = 'pass' } = {}) {
+  if (!newHostId || !state.peer?.id) return;
+  if (newHostId === state.peer.id) becomeHost();
+  else rejoinNewHost(newHostId);
+}
+
+function beginHostRecovery(deadHostId) {
+  if (state.role !== 'guest') return;
+  if (!state.passHostOnLeave) {
+    setStatus('Host disconnected', 'err');
+    toast('Host left the room');
+    return;
+  }
+  if (state.recoveringHost) return;
+  state.recoveringHost = true;
+  clearTimeout(state.recoverTimer);
+  // Brief wait so an in-flight host-pass can win; then elect locally.
+  state.recoverTimer = setTimeout(() => {
+    state.recoverTimer = null;
+    // Already took over / rejoined?
+    if (state.role === 'host' || (state.hostId && state.hostId !== deadHostId && state.connections.size)) {
+      state.recoveringHost = false;
+      return;
+    }
+    const candidates = candidateIdsExcluding(deadHostId);
+    const elected = electHostId(candidates, deadHostId);
+    state.recoveringHost = false;
+    if (!elected) {
+      setStatus('Host disconnected', 'err');
+      toast('Host left — nobody left to take over');
+      return;
+    }
+    handleHostPass(elected, { reason: 'recover' });
+  }, 500);
+}
+
+function transferHostThenLeave() {
+  const deadHostId = state.peer?.id;
+  const candidates = [...state.connections.keys()];
+  const elected = electHostId(candidates, deadHostId);
+  if (!elected) {
+    destroySession();
+    return;
+  }
+  broadcast({ type: 'host-pass', newHostId: elected, passHostOnLeave: state.passHostOnLeave });
+  setStatus('Passing host…', 'warn');
+  toast('Passing host to a guest…');
+  setTimeout(() => destroySession(), 450);
+}
+
+function leaveRoom() {
+  if (state.role === 'host' && state.passHostOnLeave && state.connections.size > 0) {
+    transferHostThenLeave();
+  } else {
+    destroySession();
+  }
 }
 
 function roomUrl(id) {
@@ -431,6 +601,7 @@ function handleMessage(fromId, raw) {
         ]});
         sendTo(conn, { type: 'state', ...currentPlayback() });
         sendTo(conn, queuePayload());
+        sendTo(conn, settingsPayload());
         broadcast({ type: 'peer-join', id: fromId, name: msg.name, role: msg.role }, fromId);
       }
       break;
@@ -512,6 +683,23 @@ function handleMessage(fromId, raw) {
       }
       break;
     }
+    case 'settings': {
+      if (typeof msg.passHostOnLeave === 'boolean') {
+        state.passHostOnLeave = msg.passHostOnLeave;
+        syncPassHostUI();
+      }
+      break;
+    }
+    case 'host-pass': {
+      if (msg.newHostId) {
+        if (typeof msg.passHostOnLeave === 'boolean') state.passHostOnLeave = msg.passHostOnLeave;
+        clearTimeout(state.recoverTimer);
+        state.recoverTimer = null;
+        state.recoveringHost = false;
+        handleHostPass(msg.newHostId, { reason: 'pass' });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -529,13 +717,19 @@ function wireConnection(conn, remoteRoleHint = 'guest') {
   conn.on('data', (data) => handleMessage(conn.peer, data));
 
   conn.on('close', () => {
+    const wasHostConn = state.role === 'guest' && conn.peer === state.hostId;
+    const deadId = conn.peer;
     state.connections.delete(conn.peer);
-    state.peers.delete(conn.peer);
+    // Keep roster entry briefly during host recovery so election sees peers
+    if (!(wasHostConn && state.passHostOnLeave)) {
+      state.peers.delete(conn.peer);
+    } else {
+      state.peers.delete(conn.peer); // dead host out of candidates
+    }
     if (state.role === 'host') broadcast({ type: 'peer-leave', id: conn.peer });
     renderPeers();
-    if (state.role === 'guest' && conn.peer === state.hostId) {
-      setStatus('Host disconnected', 'err');
-      toast('Host left the room');
+    if (wasHostConn) {
+      beginHostRecovery(deadId);
     } else {
       setStatus(state.role === 'host' ? `Host · ${state.connections.size} linked` : 'Connected', 'ok');
     }
@@ -570,6 +764,7 @@ function showRoom() {
   els.hostControls.classList.toggle('hidden', !isHost);
   els.guestNote.classList.toggle('hidden', isHost);
   if (els.roomName) els.roomName.value = state.name;
+  syncPassHostUI();
   renderPeers();
   renderQueue();
 }
@@ -588,6 +783,12 @@ function destroySession() {
   state.peer = null;
   state.role = null;
   state.hostId = null;
+  state.acceptingConnections = false;
+  state.recoveringHost = false;
+  clearTimeout(state.recoverTimer);
+  state.recoverTimer = null;
+  state.passHostOnLeave = els.passHostCreate ? !!els.passHostCreate.checked : true;
+  syncPassHostUI();
   if (state.player) {
     try { state.player.destroy(); } catch { /* ignore */ }
     state.player = null;
@@ -639,7 +840,9 @@ async function createRoom() {
     state.peer = peer;
     state.role = 'host';
     state.hostId = id;
-    peer.on('connection', (conn) => wireConnection(conn, 'guest'));
+    state.passHostOnLeave = els.passHostCreate ? !!els.passHostCreate.checked : true;
+    syncPassHostUI();
+    ensureAcceptingConnections();
     peer.on('error', (err) => {
       console.error(err);
       toast(err?.message || 'Peer error');
@@ -697,7 +900,18 @@ els.join.addEventListener('click', () => joinRoom(els.roomInput.value));
 els.roomInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') joinRoom(els.roomInput.value);
 });
-els.leave.addEventListener('click', () => destroySession());
+els.leave.addEventListener('click', () => leaveRoom());
+els.passHostToggle?.addEventListener('change', () => {
+  if (state.role !== 'host') {
+    syncPassHostUI();
+    return;
+  }
+  setPassHostOnLeave(!!els.passHostToggle.checked, { emit: true });
+  toast(state.passHostOnLeave ? 'Host will pass to a guest on leave' : 'Room ends if you leave');
+});
+els.passHostCreate?.addEventListener('change', () => {
+  // Only affects the next room you create; mirrored into state on createRoom.
+});
 els.copyLink.addEventListener('click', async () => {
   const url = roomUrl(state.hostId || state.peer?.id);
   try {
