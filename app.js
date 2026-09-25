@@ -39,6 +39,7 @@ const els = {
   chatLogPrevious: document.getElementById('chat-log-previous'),
   chatTabPrevious: document.getElementById('chat-tab-previous'),
   chatTabCurrent: document.getElementById('chat-tab-current'),
+  chatTabs: document.querySelector('.chat-tabs'),
   chatForm: document.getElementById('chat-form'),
   chatInput: document.getElementById('chat-input'),
   toast: document.getElementById('toast'),
@@ -218,10 +219,37 @@ function formatReplayClock(ms) {
   return `${m}:${String(s).padStart(2, '0')}`;
 }
 
+function syncPreviousChatAvailability() {
+  const replayOn = !!(state.replay && state.replay.active);
+  // Previous tab (and the tab strip) only while a playback session is loaded
+  if (els.chatTabs) els.chatTabs.classList.toggle('hidden', !replayOn);
+  if (els.chatTabPrevious) {
+    els.chatTabPrevious.classList.toggle('hidden', !replayOn);
+    els.chatTabPrevious.toggleAttribute('hidden', !replayOn);
+    els.chatTabPrevious.disabled = !replayOn;
+  }
+  if (!replayOn) {
+    state.chatTab = 'current';
+    if (els.chatLogPrevious) els.chatLogPrevious.classList.add('hidden');
+    if (els.chatLogCurrent) els.chatLogCurrent.classList.remove('hidden');
+    if (els.chatTabCurrent) {
+      els.chatTabCurrent.classList.add('active');
+      els.chatTabCurrent.setAttribute('aria-selected', 'true');
+    }
+    if (els.chatTabPrevious) {
+      els.chatTabPrevious.classList.remove('active');
+      els.chatTabPrevious.setAttribute('aria-selected', 'false');
+    }
+  }
+}
+
 function setChatTab(tab) {
-  const next = tab === 'previous' ? 'previous' : 'current';
+  const replayOn = !!(state.replay && state.replay.active);
+  let next = tab === 'previous' ? 'previous' : 'current';
+  if (next === 'previous' && !replayOn) next = 'current';
   state.chatTab = next;
-  const showPrev = next === 'previous';
+  const showPrev = next === 'previous' && replayOn;
+  syncPreviousChatAvailability();
   if (els.chatLogPrevious) els.chatLogPrevious.classList.toggle('hidden', !showPrev);
   if (els.chatLogCurrent) els.chatLogCurrent.classList.toggle('hidden', showPrev);
   if (els.chatTabPrevious) {
@@ -241,7 +269,7 @@ function addPreviousChat(by, text) {
   line.innerHTML = `<span class="who">${escapeHtml(by || 'Someone')}</span><span>${escapeHtml(text || '')}</span>`;
   els.chatLogPrevious.appendChild(line);
   els.chatLogPrevious.scrollTop = els.chatLogPrevious.scrollHeight;
-  setChatTab('previous');
+  // Stay on Current by default; user can open Previous while replaying
 }
 
 function clearPreviousChat() {
@@ -640,7 +668,7 @@ function loadSessionForPlayback(data) {
     }
   }
 
-  setChatTab('previous');
+  setChatTab('current');
   updateReplayStatus();
   toast(`Loaded ${events.length} events — press Play`);
 }
@@ -2223,6 +2251,7 @@ els.renameForm?.addEventListener('submit', (e) => {
 
 // Boot
 els.name.value = randomName();
+syncPreviousChatAvailability();
 window.onYouTubeIframeAPIReady = () => {
   state.ytReady = true;
 };

@@ -397,6 +397,8 @@ input:focus {
   gap: 8px;
   margin-bottom: 8px;
 }
+.chat-tabs.hidden { display: none !important; }
+.chat-tab.hidden { display: none !important; }
 .chat-tab {
   flex: 1;
   border: var(--fat-border);
