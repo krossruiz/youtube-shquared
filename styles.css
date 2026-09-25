@@ -86,3 +86,11 @@ input:focus { border-color: var(--accent-2); box-shadow: 0 0 0 3px rgba(108, 140
   background: #111827; border: 1px solid var(--border); color: var(--text);
   padding: 12px 16px; border-radius: 12px; box-shadow: var(--shadow); z-index: 50; max-width: min(92vw, 420px);
 }
+
+.rename-form { display: flex; gap: 8px; align-items: center; flex: 1; min-width: 180px; justify-content: flex-end; }
+.rename-form input { flex: 1; max-width: 180px; padding: 10px 12px; border-radius: 12px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text); }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); border: 0; }
+@media (max-width: 700px) {
+  .rename-form { flex-basis: 100%; justify-content: stretch; order: 3; }
+  .rename-form input { max-width: none; }
+}

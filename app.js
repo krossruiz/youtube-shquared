@@ -15,6 +15,9 @@ const els = {
   roomCode: document.getElementById('room-code'),
   copyLink: document.getElementById('copy-link-btn'),
   leave: document.getElementById('leave-btn'),
+  renameForm: document.getElementById('rename-form'),
+  roomName: document.getElementById('room-name-input'),
+  renameBtn: document.getElementById('rename-btn'),
   hostControls: document.getElementById('host-controls'),
   guestNote: document.getElementById('guest-note'),
   videoInput: document.getElementById('video-input'),
@@ -144,12 +147,53 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function addChat(name, text) {
+function addChat(name, text, peerId) {
   const line = document.createElement('div');
   line.className = 'chat-line';
+  if (peerId) line.dataset.peerId = peerId;
   line.innerHTML = `<span class="who">${escapeHtml(name)}</span><span>${escapeHtml(text)}</span>`;
   els.chatLog.appendChild(line);
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
+}
+
+function rewriteChatNames(peerId, newName) {
+  if (!peerId) return;
+  const lines = els.chatLog.querySelectorAll(`.chat-line[data-peer-id="${CSS.escape(peerId)}"] .who`);
+  for (const who of lines) who.textContent = newName;
+}
+
+function applyRename(peerId, newName) {
+  const name = String(newName || '').trim().slice(0, 24);
+  if (!peerId || !name) return;
+  if (peerId === state.peer?.id) {
+    state.name = name;
+    els.name.value = name;
+    if (els.roomName) els.roomName.value = name;
+  } else if (state.peers.has(peerId)) {
+    const info = state.peers.get(peerId);
+    state.peers.set(peerId, { ...info, name });
+  } else {
+    state.peers.set(peerId, { name, role: 'guest' });
+  }
+  rewriteChatNames(peerId, name);
+  renderPeers();
+}
+
+function renameSelf(rawName) {
+  const name = String(rawName || '').trim().slice(0, 24);
+  if (!name) {
+    toast('Enter a name');
+    return;
+  }
+  if (!state.peer?.id) return;
+  if (name === state.name) {
+    toast('That is already your name');
+    return;
+  }
+  const oldName = state.name;
+  applyRename(state.peer.id, name);
+  broadcast({ type: 'rename', peerId: state.peer.id, name, oldName });
+  toast(`Renamed to ${name}`);
 }
 
 function ensurePlayer(videoId, onReady) {
@@ -272,9 +316,21 @@ function handleMessage(fromId, raw) {
     case 'state':
       applyRemoteState(msg);
       break;
-    case 'chat':
-      addChat(msg.name || 'Someone', msg.text || '');
+    case 'chat': {
+      const pid = msg.peerId || fromId;
+      addChat(msg.name || 'Someone', msg.text || '', pid);
+      // Host relays so all guests see each other (star topology).
+      if (state.role === 'host') broadcast({ type: 'chat', peerId: pid, name: msg.name, text: msg.text, at: msg.at }, fromId);
       break;
+    }
+    case 'rename': {
+      const pid = msg.peerId || fromId;
+      applyRename(pid, msg.name);
+      if (state.role === 'host') {
+        broadcast({ type: 'rename', peerId: pid, name: msg.name, oldName: msg.oldName }, fromId);
+      }
+      break;
+    }
     default:
       break;
   }
@@ -333,6 +389,7 @@ function showRoom() {
   const isHost = state.role === 'host';
   els.hostControls.classList.toggle('hidden', !isHost);
   els.guestNote.classList.toggle('hidden', isHost);
+  if (els.roomName) els.roomName.value = state.name;
   renderPeers();
 }
 
@@ -498,8 +555,13 @@ els.chatForm.addEventListener('submit', (e) => {
   const text = (els.chatInput.value || '').trim();
   if (!text) return;
   els.chatInput.value = '';
-  addChat(state.name, text);
-  broadcast({ type: 'chat', name: state.name, text, at: Date.now() });
+  addChat(state.name, text, state.peer?.id);
+  broadcast({ type: 'chat', peerId: state.peer?.id, name: state.name, text, at: Date.now() });
+});
+
+els.renameForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  renameSelf(els.roomName?.value);
 });
 
 // Boot
