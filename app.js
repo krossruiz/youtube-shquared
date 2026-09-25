@@ -128,7 +128,13 @@ async function fetchVideoTitle(videoId) {
 }
 
 function queuePayload() {
-  return { type: 'queue-sync', queue: state.queue, videoId: state.videoId, videoTitle: state.videoTitle };
+  return {
+    type: 'queue-sync',
+    queue: state.queue,
+    history: state.history,
+    videoId: state.videoId,
+    videoTitle: state.videoTitle,
+  };
 }
 
 function emitQueue() {
@@ -144,12 +150,45 @@ function setNowPlayingLabel() {
 function renderQueue() {
   if (!els.queueList) return;
   els.queueList.innerHTML = '';
-  const empty = !state.queue.length;
+  const hasHistory = state.history.length > 0;
+  const hasUpcoming = state.queue.length > 0;
+  const hasNow = !!(state.videoId || state.videoTitle);
+  const empty = !hasHistory && !hasUpcoming && !hasNow;
   if (els.queueEmpty) els.queueEmpty.classList.toggle('hidden', !empty);
+
+  // Oldest played first, then now, then upcoming — full session timeline
+  for (const item of state.history) {
+    const li = document.createElement('li');
+    li.className = 'played';
+    li.innerHTML = `
+      <span class="badge">Played</span>
+      <div class="meta">
+        <span class="title" title="${escapeHtml(item.title || item.videoId)}">${escapeHtml(item.title || item.videoId)}</span>
+        <span class="by">earlier in the room</span>
+      </div>
+    `;
+    els.queueList.appendChild(li);
+  }
+
+  if (hasNow) {
+    const li = document.createElement('li');
+    li.className = 'now';
+    li.innerHTML = `
+      <span class="badge">Now</span>
+      <div class="meta">
+        <span class="title" title="${escapeHtml(state.videoTitle || state.videoId)}">${escapeHtml(state.videoTitle || state.videoId || '—')}</span>
+        <span class="by">playing now</span>
+      </div>
+    `;
+    els.queueList.appendChild(li);
+  }
+
   for (const item of state.queue) {
     const li = document.createElement('li');
+    li.className = 'upcoming';
     const canRemove = state.role === 'host' || item.addedBy === state.peer?.id;
     li.innerHTML = `
+      <span class="badge">Next</span>
       <div class="meta">
         <span class="title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
         <span class="by">added by ${escapeHtml(item.addedByName || 'Someone')}</span>
@@ -162,12 +201,14 @@ function renderQueue() {
     }
     els.queueList.appendChild(li);
   }
+
   setNowPlayingLabel();
   syncTransportUI();
 }
 
 function applyQueueSync(msg) {
   state.queue = Array.isArray(msg.queue) ? msg.queue : [];
+  state.history = Array.isArray(msg.history) ? msg.history : [];
   if (msg.videoTitle) state.videoTitle = msg.videoTitle;
   if (msg.videoId) state.videoId = msg.videoId;
   renderQueue();
@@ -229,11 +270,14 @@ function pushHistoryCurrent() {
   const last = state.history[state.history.length - 1];
   if (last && last.videoId === state.videoId) return;
   state.history.push({
+    id: `h-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`,
     videoId: state.videoId,
     title: state.videoTitle || state.videoId,
   });
   // Cap history so it doesn't grow forever
   if (state.history.length > 40) state.history.splice(0, state.history.length - 40);
+  renderQueue();
+  emitQueue();
   syncTransportUI();
 }
 

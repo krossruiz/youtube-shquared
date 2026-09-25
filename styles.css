@@ -471,11 +471,12 @@ input:focus {
   counter-increment: q;
 }
 .queue-list li::before {
-  content: counter(q);
+  content: none;
+  display: none;
   width: 28px;
   height: 28px;
   border-radius: 50%;
-  display: grid;
+  /* legacy counter kept inert — badges label Played / Now / Next */
   place-items: center;
   background: var(--crayon-yellow);
   border: 3px solid #1a1a1a;
@@ -611,3 +612,33 @@ input:focus {
   }
   .side-block:hover, #player-wrap:hover { transform: none; }
 }
+
+
+/* Queue timeline: played → now → upcoming */
+.queue-list li.played {
+  background: #ececec;
+  opacity: 0.92;
+}
+.queue-list li.played .title { text-decoration: line-through; text-decoration-thickness: 2px; }
+.queue-list li.now {
+  background: #fff7a8;
+  box-shadow: 3px 3px 0 var(--crayon-orange);
+}
+.queue-list li.upcoming {
+  background: #e8fff0;
+}
+.queue-list .badge {
+  flex-shrink: 0;
+  align-self: center;
+  padding: 4px 8px;
+  border: 2px solid #1a1a1a;
+  border-radius: 999px;
+  font-family: var(--font-display);
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  background: #fff;
+}
+.queue-list li.played .badge { background: #cfcfcf; }
+.queue-list li.now .badge { background: var(--crayon-orange); color: #fff; }
+.queue-list li.upcoming .badge { background: var(--crayon-green); color: #08310f; }
