@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="description" content="Watch YouTube together in sync over WebRTC." />
   <title>YouTube Shquared — watch together</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700&family=Luckiest+Guy&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="styles.css" />
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
@@ -12,10 +15,10 @@
   <div id="app">
     <header class="top">
       <div class="brand">
-        <span class="logo" aria-hidden="true">▶▶</span>
+        <span class="logo" aria-hidden="true">🎨</span>
         <div>
           <h1>YouTube Shquared</h1>
-          <p class="tagline">Watch YouTube together — synced over WebRTC</p>
+          <p class="tagline">Stamp, scribble, sync — watch YouTube together!</p>
         </div>
       </div>
       <div id="status-pill" class="pill">Idle</div>
@@ -39,9 +42,7 @@
     <section id="room" class="panel hidden">
       <div class="room-bar">
         <div class="room-meta">
-          <span class="label">Room</span>
-          <code id="room-code"></code>
-          <button id="copy-link-btn" class="btn ghost" type="button">Copy link</button>
+          <button id="copy-link-btn" class="btn share" type="button">Share Link to Room</button>
         </div>
         <form id="rename-form" class="rename-form" autocomplete="off">
           <label class="sr-only" for="room-name-input">Your name</label>

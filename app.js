@@ -12,7 +12,6 @@ const els = {
   create: document.getElementById('create-btn'),
   join: document.getElementById('join-btn'),
   roomInput: document.getElementById('room-input'),
-  roomCode: document.getElementById('room-code'),
   copyLink: document.getElementById('copy-link-btn'),
   leave: document.getElementById('leave-btn'),
   renameForm: document.getElementById('rename-form'),
@@ -385,7 +384,6 @@ function startHostTick() {
 function showRoom() {
   els.lobby.classList.add('hidden');
   els.room.classList.remove('hidden');
-  els.roomCode.textContent = state.hostId || state.peer.id;
   const isHost = state.role === 'host';
   els.hostControls.classList.toggle('hidden', !isHost);
   els.guestNote.classList.toggle('hidden', isHost);
@@ -518,7 +516,7 @@ els.copyLink.addEventListener('click', async () => {
   const url = roomUrl(state.hostId || state.peer?.id);
   try {
     await navigator.clipboard.writeText(url);
-    toast('Link copied');
+    toast('Room link copied — share it!');
   } catch {
     prompt('Copy this link', url);
   }
