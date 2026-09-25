@@ -54,7 +54,7 @@ const state = {
   videoTitle: 'Warm-up jam',
   queue: [], // [{ id, videoId, title, addedBy, addedByName }]
   history: [], // [{ id?, videoId, title }] previously played (for Last)
-  drag: null, // { kind: 'played'|'upcoming', index }
+  selectedQueue: null, // { kind: 'played'|'upcoming', id }
   applyingRemote: false,
   hostTick: null,
   toastTimer: null,
@@ -155,6 +155,12 @@ function listForKind(kind) {
 function applyQueueOrder(history, queue, { emit = true } = {}) {
   state.history = Array.isArray(history) ? history : [];
   state.queue = Array.isArray(queue) ? queue : [];
+  if (state.selectedQueue?.id) {
+    const id = state.selectedQueue.id;
+    if (state.queue.some((q) => q.id === id)) state.selectedQueue = { kind: 'upcoming', id };
+    else if (state.history.some((h) => h.id === id)) state.selectedQueue = { kind: 'played', id };
+    else state.selectedQueue = null;
+  }
   renderQueue();
   if (emit) {
     if (state.role === 'host') emitQueue();
@@ -211,83 +217,66 @@ function moveQueueItem(fromKind, fromIndex, toKind, toIndex) {
   applyQueueOrder(nextHistory, nextQueue, { emit: true });
 }
 
-function clearDragUI() {
-  els.queueList?.querySelectorAll('.dragging, .drag-over').forEach((n) => {
-    n.classList.remove('dragging', 'drag-over');
-  });
-}
+/** Move one Played/Next row up (-1) or down (+1). Crosses Now into the other list. */
+function nudgeQueueItem(kind, index, dir) {
+  if (kind !== 'played' && kind !== 'upcoming') return;
+  if (dir !== -1 && dir !== 1) return;
+  const list = listForKind(kind);
+  if (index < 0 || index >= list.length) return;
+  const item = list[index];
+  if (item?.id) state.selectedQueue = { kind, id: item.id };
 
-function hitTestQueueRow(clientY) {
-  if (!els.queueList) return null;
-  const rows = [...els.queueList.querySelectorAll('li.played, li.upcoming, li.now')];
-  for (const row of rows) {
-    const r = row.getBoundingClientRect();
-    if (clientY >= r.top && clientY <= r.bottom) {
-      const kind = row.classList.contains('played')
-        ? 'played'
-        : row.classList.contains('upcoming')
-          ? 'upcoming'
-          : 'now';
-      const index = kind === 'now' ? 0 : Number(row.dataset.index || 0);
-      const after = clientY > r.top + r.height / 2;
-      return { kind, index, after, el: row };
-    }
+  const target = index + dir;
+  if (target >= 0 && target < list.length) {
+    // Same list: moveQueueItem insertAt uses pre-splice index; down needs +2
+    const toIndex = dir > 0 ? index + 2 : index - 1;
+    moveQueueItem(kind, index, kind, toIndex);
+    return;
   }
-  // Below all rows → end of upcoming (or played if no upcoming)
-  if (state.queue.length) return { kind: 'upcoming', index: state.queue.length - 1, after: true, el: null };
-  if (state.history.length) return { kind: 'played', index: state.history.length - 1, after: true, el: null };
-  return null;
+  if (kind === 'upcoming' && dir === -1 && index === 0) {
+    moveQueueItem('upcoming', 0, 'played', state.history.length);
+    return;
+  }
+  if (kind === 'played' && dir === 1 && index === list.length - 1) {
+    moveQueueItem('played', index, 'upcoming', 0);
+  }
 }
 
-function wireQueueDrag(li, kind, index) {
+function selectQueueRow(kind, id) {
+  state.selectedQueue = { kind, id };
+  renderQueue();
+}
+
+function wireQueueRow(li, kind, index, itemId) {
   li.dataset.kind = kind;
   li.dataset.index = String(index);
-  li.style.touchAction = 'none';
-
-  const onPointerDown = (e) => {
-    if (e.button != null && e.button !== 0) return;
-    if (e.target.closest && e.target.closest('button.rm')) return;
-    e.preventDefault();
-    const pointerId = e.pointerId;
-    state.drag = { kind, index, pointerId };
-    li.classList.add('dragging');
-    try { li.setPointerCapture(pointerId); } catch { /* ignore */ }
-
-    const onMove = (ev) => {
-      if (!state.drag || state.drag.pointerId !== pointerId) return;
-      clearDragUI();
-      li.classList.add('dragging');
-      const hit = hitTestQueueRow(ev.clientY);
-      if (hit?.el) hit.el.classList.add('drag-over');
-    };
-
-    const finish = (ev) => {
-      try { li.releasePointerCapture(pointerId); } catch { /* ignore */ }
-      window.removeEventListener('pointermove', onMove);
-      window.removeEventListener('pointerup', finish);
-      window.removeEventListener('pointercancel', finish);
-      const drag = state.drag;
-      state.drag = null;
-      clearDragUI();
-      if (!drag) return;
-      const hit = hitTestQueueRow(ev.clientY);
-      if (!hit) return;
-      let toKind = hit.kind;
-      let toIndex = hit.index + (hit.after ? 1 : 0);
-      if (toKind === 'now') {
-        // Drop on Now → front of upcoming
-        toKind = 'upcoming';
-        toIndex = 0;
-      }
-      moveQueueItem(drag.kind, drag.index, toKind, toIndex);
-    };
-
-    window.addEventListener('pointermove', onMove);
-    window.addEventListener('pointerup', finish);
-    window.addEventListener('pointercancel', finish);
-  };
-
-  li.addEventListener('pointerdown', onPointerDown);
+  li.dataset.id = itemId || '';
+  if (state.selectedQueue && state.selectedQueue.kind === kind && state.selectedQueue.id === itemId) {
+    li.classList.add('selected');
+  }
+  li.addEventListener('click', (e) => {
+    if (e.target.closest && e.target.closest('button')) return;
+    selectQueueRow(kind, itemId);
+  });
+  const up = li.querySelector('button.move-up');
+  const down = li.querySelector('button.move-down');
+  if (up) {
+    up.disabled = kind === 'played' ? index === 0 : false;
+    // upcoming index 0 can still move up into Played
+    up.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectQueueRow(kind, itemId);
+      nudgeQueueItem(kind, index, -1);
+    });
+  }
+  if (down) {
+    down.disabled = kind === 'upcoming' && index >= state.queue.length - 1;
+    down.addEventListener('click', (e) => {
+      e.stopPropagation();
+      selectQueueRow(kind, itemId);
+      nudgeQueueItem(kind, index, 1);
+    });
+  }
 }
 
 function renderQueue() {
@@ -304,14 +293,17 @@ function renderQueue() {
     const li = document.createElement('li');
     li.className = 'played';
     li.innerHTML = `
-      <span class="grip" aria-hidden="true">⋮⋮</span>
       <span class="badge">Played</span>
       <div class="meta">
         <span class="title" title="${escapeHtml(item.title || item.videoId)}">${escapeHtml(item.title || item.videoId)}</span>
-        <span class="by">earlier in the room · drag to reorder</span>
+        <span class="by">earlier in the room · arrows to reorder</span>
+      </div>
+      <div class="move-btns">
+        <button type="button" class="btn move-up" aria-label="Move up">▲</button>
+        <button type="button" class="btn move-down" aria-label="Move down">▼</button>
       </div>
     `;
-    wireQueueDrag(li, 'played', index);
+    wireQueueRow(li, 'played', index, item.id);
     els.queueList.appendChild(li);
   });
 
@@ -333,19 +325,25 @@ function renderQueue() {
     li.className = 'upcoming';
     const canRemove = state.role === 'host' || item.addedBy === state.peer?.id;
     li.innerHTML = `
-      <span class="grip" aria-hidden="true">⋮⋮</span>
       <span class="badge">Next</span>
       <div class="meta">
         <span class="title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
-        <span class="by">added by ${escapeHtml(item.addedByName || 'Someone')} · drag to reorder</span>
+        <span class="by">added by ${escapeHtml(item.addedByName || 'Someone')} · arrows to reorder</span>
+      </div>
+      <div class="move-btns">
+        <button type="button" class="btn move-up" aria-label="Move up">▲</button>
+        <button type="button" class="btn move-down" aria-label="Move down">▼</button>
       </div>
       <button type="button" class="btn rm" data-qid="${escapeHtml(item.id)}" ${canRemove ? '' : 'disabled'}>✕</button>
     `;
-    const btn = li.querySelector('button');
+    const rm = li.querySelector('button.rm');
     if (canRemove) {
-      btn.addEventListener('click', () => removeFromQueue(item.id));
+      rm.addEventListener('click', (e) => {
+        e.stopPropagation();
+        removeFromQueue(item.id);
+      });
     }
-    wireQueueDrag(li, 'upcoming', index);
+    wireQueueRow(li, 'upcoming', index, item.id);
     els.queueList.appendChild(li);
   });
 
@@ -388,16 +386,20 @@ async function requestAddToQueue(raw) {
     return;
   }
   const title = await fetchVideoTitle(videoId);
+  // Duplicates are allowed — each add is its own queue row (unique item id).
+  const alreadyQueued = state.queue.some((q) => q.videoId === videoId)
+    || state.videoId === videoId
+    || state.history.some((h) => h.videoId === videoId);
   const item = makeQueueItem(videoId, title, state.peer?.id, state.name);
   if (state.role === 'host') {
     addToQueueLocal(item);
     emitQueue();
-    toast(`Queued: ${title}`);
+    toast(alreadyQueued ? `Queued again: ${title}` : `Queued: ${title}`);
     // If nothing meaningful is playing / ended, start it
     maybeAutoStartQueue();
   } else {
     broadcast({ type: 'queue-add', item });
-    toast(`Requested: ${title}`);
+    toast(alreadyQueued ? `Requested again: ${title}` : `Requested: ${title}`);
   }
   if (els.queueInput) els.queueInput.value = '';
 }

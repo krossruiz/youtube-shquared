@@ -460,7 +460,7 @@ input:focus {
 }
 .queue-list li {
   display: grid;
-  grid-template-columns: auto auto 1fr auto;
+  grid-template-columns: auto 1fr auto auto;
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
@@ -644,27 +644,32 @@ input:focus {
 
 .queue-list li.played,
 .queue-list li.upcoming {
-  cursor: grab;
-  touch-action: none;
-  user-select: none;
+  cursor: pointer;
 }
-.queue-list li.played:active,
-.queue-list li.upcoming:active { cursor: grabbing; }
-.queue-list li.dragging {
-  opacity: 0.55;
-  transform: scale(1.03) rotate(-0.5deg);
-}
-.queue-list li.drag-over {
-  outline: 3px dashed #1a1a1a;
+.queue-list li.selected {
+  outline: 3px solid var(--crayon-purple);
   outline-offset: -3px;
+  background: #fff8ff;
 }
-.queue-list .grip {
-  font-size: 1rem;
-  font-weight: 900;
-  letter-spacing: -1px;
-  color: #1a1a1a;
-  opacity: 0.55;
+.queue-list .move-btns {
+  display: grid;
+  gap: 4px;
+}
+.queue-list .move-btns .btn {
+  padding: 4px 8px;
+  font-size: 0.75rem;
   line-height: 1;
-  padding: 0 2px;
+  border-radius: 10px;
+  min-width: 32px;
 }
-.queue-list li.now { cursor: default; }
+.queue-list .move-btns .btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.queue-list li.now {
+  cursor: default;
+  grid-template-columns: auto 1fr;
+}
+.queue-list li.played {
+  grid-template-columns: auto 1fr auto;
+}
