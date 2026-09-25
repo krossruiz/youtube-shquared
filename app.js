@@ -23,8 +23,6 @@ const els = {
   guestNote: document.getElementById('guest-note'),
   videoInput: document.getElementById('video-input'),
   load: document.getElementById('load-btn'),
-  play: document.getElementById('play-btn'),
-  pause: document.getElementById('pause-btn'),
   queueForm: document.getElementById('queue-form'),
   queueInput: document.getElementById('queue-input'),
   queueList: document.getElementById('queue-list'),
@@ -945,17 +943,6 @@ els.queueForm?.addEventListener('submit', (e) => {
   requestAddToQueue(els.queueInput?.value);
 });
 
-els.play.addEventListener('click', () => {
-  if (state.role !== 'host' || !state.player) return;
-  state.player.playVideo();
-  emitState();
-});
-
-els.pause.addEventListener('click', () => {
-  if (state.role !== 'host' || !state.player) return;
-  state.player.pauseVideo();
-  emitState();
-});
 
 els.chatForm.addEventListener('submit', (e) => {
   e.preventDefault();
