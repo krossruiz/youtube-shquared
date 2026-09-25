@@ -59,11 +59,22 @@
           </div>
           <div id="host-controls" class="controls hidden">
             <input id="video-input" type="url" placeholder="Paste YouTube URL or video ID" />
-            <button id="load-btn" class="btn primary" type="button">Load</button>
+            <button id="load-btn" class="btn primary" type="button">Play now</button>
             <button id="play-btn" class="btn" type="button">Play</button>
             <button id="pause-btn" class="btn" type="button">Pause</button>
           </div>
-          <p id="guest-note" class="hint hidden">You’re a guest — playback follows the host.</p>
+          <p id="guest-note" class="hint hidden">You’re a guest — playback follows the host. Anyone can add to the queue!</p>
+
+          <div class="side-block queue-block">
+            <h2>Queue</h2>
+            <p id="now-playing" class="now-playing">Now playing: —</p>
+            <form id="queue-form" class="queue-form" autocomplete="off">
+              <input id="queue-input" type="url" placeholder="Paste a YouTube link to add…" />
+              <button class="btn primary" type="submit">Add</button>
+            </form>
+            <ol id="queue-list" class="queue-list"></ol>
+            <p class="hint queue-empty-hint" id="queue-empty">Queue is empty — add the next jam!</p>
+          </div>
         </div>
 
         <aside class="side">

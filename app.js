@@ -23,6 +23,11 @@ const els = {
   load: document.getElementById('load-btn'),
   play: document.getElementById('play-btn'),
   pause: document.getElementById('pause-btn'),
+  queueForm: document.getElementById('queue-form'),
+  queueInput: document.getElementById('queue-input'),
+  queueList: document.getElementById('queue-list'),
+  queueEmpty: document.getElementById('queue-empty'),
+  nowPlaying: document.getElementById('now-playing'),
   peerList: document.getElementById('peer-list'),
   chatLog: document.getElementById('chat-log'),
   chatForm: document.getElementById('chat-form'),
@@ -40,9 +45,12 @@ const state = {
   player: null,
   ytReady: false,
   videoId: DEFAULT_VIDEO,
+  videoTitle: 'Warm-up jam',
+  queue: [], // [{ id, videoId, title, addedBy, addedByName }]
   applyingRemote: false,
   hostTick: null,
   toastTimer: null,
+  advancing: false,
 };
 
 function randomName() {
@@ -83,6 +91,146 @@ function extractVideoId(input) {
     }
   } catch { /* not a URL */ }
   return null;
+}
+
+
+function makeQueueItem(videoId, title, addedBy, addedByName) {
+  return {
+    id: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    videoId,
+    title: title || videoId,
+    addedBy: addedBy || null,
+    addedByName: addedByName || 'Someone',
+  };
+}
+
+async function fetchVideoTitle(videoId) {
+  try {
+    const url = `https://www.youtube.com/oembed?url=${encodeURIComponent(`https://www.youtube.com/watch?v=${videoId}`)}&format=json`;
+    const res = await fetch(url);
+    if (!res.ok) return videoId;
+    const data = await res.json();
+    return (data && data.title) || videoId;
+  } catch {
+    return videoId;
+  }
+}
+
+function queuePayload() {
+  return { type: 'queue-sync', queue: state.queue, videoId: state.videoId, videoTitle: state.videoTitle };
+}
+
+function emitQueue() {
+  if (state.role === 'host') broadcast(queuePayload());
+}
+
+function setNowPlayingLabel() {
+  if (!els.nowPlaying) return;
+  const title = state.videoTitle || state.videoId || '—';
+  els.nowPlaying.textContent = `Now playing: ${title}`;
+}
+
+function renderQueue() {
+  if (!els.queueList) return;
+  els.queueList.innerHTML = '';
+  const empty = !state.queue.length;
+  if (els.queueEmpty) els.queueEmpty.classList.toggle('hidden', !empty);
+  for (const item of state.queue) {
+    const li = document.createElement('li');
+    const canRemove = state.role === 'host' || item.addedBy === state.peer?.id;
+    li.innerHTML = `
+      <div class="meta">
+        <span class="title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
+        <span class="by">added by ${escapeHtml(item.addedByName || 'Someone')}</span>
+      </div>
+      <button type="button" class="btn rm" data-qid="${escapeHtml(item.id)}" ${canRemove ? '' : 'disabled'}>✕</button>
+    `;
+    const btn = li.querySelector('button');
+    if (canRemove) {
+      btn.addEventListener('click', () => removeFromQueue(item.id));
+    }
+    els.queueList.appendChild(li);
+  }
+  setNowPlayingLabel();
+}
+
+function applyQueueSync(msg) {
+  state.queue = Array.isArray(msg.queue) ? msg.queue : [];
+  if (msg.videoTitle) state.videoTitle = msg.videoTitle;
+  if (msg.videoId) state.videoId = msg.videoId;
+  renderQueue();
+}
+
+function addToQueueLocal(item) {
+  state.queue.push(item);
+  renderQueue();
+}
+
+function removeFromQueueLocal(qid) {
+  state.queue = state.queue.filter((q) => q.id !== qid);
+  renderQueue();
+}
+
+function removeFromQueue(qid) {
+  if (!qid) return;
+  if (state.role === 'host') {
+    removeFromQueueLocal(qid);
+    emitQueue();
+  } else {
+    broadcast({ type: 'queue-remove', id: qid, peerId: state.peer?.id });
+  }
+}
+
+async function requestAddToQueue(raw) {
+  const videoId = extractVideoId(raw);
+  if (!videoId) {
+    toast('Paste a valid YouTube URL or video ID');
+    return;
+  }
+  const title = await fetchVideoTitle(videoId);
+  const item = makeQueueItem(videoId, title, state.peer?.id, state.name);
+  if (state.role === 'host') {
+    addToQueueLocal(item);
+    emitQueue();
+    toast(`Queued: ${title}`);
+    // If nothing meaningful is playing / ended, start it
+    maybeAutoStartQueue();
+  } else {
+    broadcast({ type: 'queue-add', item });
+    toast(`Requested: ${title}`);
+  }
+  if (els.queueInput) els.queueInput.value = '';
+}
+
+function maybeAutoStartQueue() {
+  if (state.role !== 'host' || !state.player) return;
+  try {
+    const st = state.player.getPlayerState();
+    if (st === YT.PlayerState.ENDED || st === YT.PlayerState.UNSTARTED || st === YT.PlayerState.CUED) {
+      playNextFromQueue();
+    }
+  } catch { /* ignore */ }
+}
+
+function playNextFromQueue() {
+  if (state.role !== 'host' || state.advancing) return;
+  if (!state.queue.length) return;
+  state.advancing = true;
+  const next = state.queue.shift();
+  renderQueue();
+  emitQueue();
+  state.videoTitle = next.title || next.videoId;
+  setNowPlayingLabel();
+  ensurePlayer(next.videoId, () => {
+    try {
+      state.player.seekTo(0, true);
+      state.player.playVideo();
+    } catch { /* ignore */ }
+    emitState();
+    state.advancing = false;
+  });
+  // safety if onReady never fires
+  setTimeout(() => { state.advancing = false; }, 2000);
 }
 
 function roomUrl(id) {
@@ -224,6 +372,9 @@ function ensurePlayer(videoId, onReady) {
         if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.BUFFERING) {
           emitState();
         }
+        if (e.data === YT.PlayerState.ENDED) {
+          playNextFromQueue();
+        }
       },
     },
   });
@@ -279,6 +430,7 @@ function handleMessage(fromId, raw) {
           ...[...state.peers.entries()].map(([id, info]) => ({ id, ...info })),
         ]});
         sendTo(conn, { type: 'state', ...currentPlayback() });
+        sendTo(conn, queuePayload());
         broadcast({ type: 'peer-join', id: fromId, name: msg.name, role: msg.role }, fromId);
       }
       break;
@@ -308,7 +460,9 @@ function handleMessage(fromId, raw) {
     }
     case 'request-state': {
       if (state.role === 'host') {
-        sendTo(state.connections.get(fromId), { type: 'state', ...currentPlayback() });
+        const conn = state.connections.get(fromId);
+        sendTo(conn, { type: 'state', ...currentPlayback() });
+        sendTo(conn, queuePayload());
       }
       break;
     }
@@ -327,6 +481,34 @@ function handleMessage(fromId, raw) {
       applyRename(pid, msg.name);
       if (state.role === 'host') {
         broadcast({ type: 'rename', peerId: pid, name: msg.name, oldName: msg.oldName }, fromId);
+      }
+      break;
+    }
+    case 'queue-sync':
+      applyQueueSync(msg);
+      break;
+    case 'queue-add': {
+      if (state.role === 'host' && msg.item && msg.item.videoId) {
+        const item = {
+          ...msg.item,
+          addedBy: msg.item.addedBy || fromId,
+          addedByName: msg.item.addedByName || state.peers.get(fromId)?.name || 'Guest',
+        };
+        addToQueueLocal(item);
+        emitQueue();
+        maybeAutoStartQueue();
+      } else if (state.role !== 'host') {
+        // Relayed copy for display if host echoed — ignore; wait for queue-sync
+      }
+      break;
+    }
+    case 'queue-remove': {
+      if (state.role === 'host' && msg.id) {
+        const item = state.queue.find((q) => q.id === msg.id);
+        if (item && item.addedBy === fromId) {
+          removeFromQueueLocal(msg.id);
+          emitQueue();
+        }
       }
       break;
     }
@@ -389,6 +571,7 @@ function showRoom() {
   els.guestNote.classList.toggle('hidden', isHost);
   if (els.roomName) els.roomName.value = state.name;
   renderPeers();
+  renderQueue();
 }
 
 function destroySession() {
@@ -413,6 +596,9 @@ function destroySession() {
     if (mount) mount.innerHTML = '';
   }
   els.chatLog.innerHTML = '';
+  state.queue = [];
+  state.videoTitle = 'Warm-up jam';
+  renderQueue();
   els.room.classList.add('hidden');
   els.lobby.classList.remove('hidden');
   setStatus('Idle');
@@ -522,18 +708,27 @@ els.copyLink.addEventListener('click', async () => {
   }
 });
 
-els.load.addEventListener('click', () => {
+els.load.addEventListener('click', async () => {
   if (state.role !== 'host') return;
   const id = extractVideoId(els.videoInput.value);
   if (!id) {
     toast('Paste a valid YouTube URL or 11-character video ID');
     return;
   }
+  const title = await fetchVideoTitle(id);
+  state.videoTitle = title;
+  setNowPlayingLabel();
   ensurePlayer(id, () => {
     state.player.seekTo(0, true);
     state.player.playVideo();
     emitState();
+    emitQueue();
   });
+});
+
+els.queueForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  requestAddToQueue(els.queueInput?.value);
 });
 
 els.play.addEventListener('click', () => {
