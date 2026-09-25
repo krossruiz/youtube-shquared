@@ -153,13 +153,30 @@ function listForKind(kind) {
 }
 
 function applyQueueOrder(history, queue, { emit = true } = {}) {
-  state.history = Array.isArray(history) ? history : state.history;
-  state.queue = Array.isArray(queue) ? queue : state.queue;
+  state.history = Array.isArray(history) ? history : [];
+  state.queue = Array.isArray(queue) ? queue : [];
   renderQueue();
   if (emit) {
     if (state.role === 'host') emitQueue();
     else broadcast({ type: 'queue-reorder', history: state.history, queue: state.queue });
   }
+}
+
+function normalizeMovedItem(item, toKind) {
+  if (toKind === 'upcoming') {
+    return {
+      id: item.id || `h2q-${Date.now().toString(36)}`,
+      videoId: item.videoId,
+      title: item.title || item.videoId,
+      addedBy: item.addedBy || state.peer?.id || null,
+      addedByName: item.addedByName || state.name || 'Someone',
+    };
+  }
+  return {
+    id: item.id || `q2h-${Date.now().toString(36)}`,
+    videoId: item.videoId,
+    title: item.title || item.videoId,
+  };
 }
 
 function moveQueueItem(fromKind, fromIndex, toKind, toIndex) {
@@ -168,87 +185,109 @@ function moveQueueItem(fromKind, fromIndex, toKind, toIndex) {
   const fromList = listForKind(fromKind);
   if (fromIndex < 0 || fromIndex >= fromList.length) return;
 
-  let insertAt = toIndex;
-  if (insertAt < 0) insertAt = 0;
-
+  let insertAt = Math.max(0, toIndex | 0);
   const nextHistory = state.history.slice();
   const nextQueue = state.queue.slice();
   const src = fromKind === 'played' ? nextHistory : nextQueue;
   const dst = toKind === 'played' ? nextHistory : nextQueue;
 
+  const [item] = src.splice(fromIndex, 1);
+  if (!item) return;
+
   if (fromKind === toKind) {
     if (insertAt > fromIndex) insertAt -= 1;
-    if (insertAt === fromIndex) return;
-    const [item] = src.splice(fromIndex, 1);
-    src.splice(Math.max(0, Math.min(insertAt, src.length)), 0, item);
+    insertAt = Math.max(0, Math.min(insertAt, src.length));
+    if (insertAt === fromIndex) {
+      // no-op restore
+      src.splice(fromIndex, 0, item);
+      return;
+    }
+    src.splice(insertAt, 0, item);
   } else {
-    const [item] = src.splice(fromIndex, 1);
-    // Moving into upcoming from history — ensure queue-shaped fields
-    const normalized = fromKind === 'played' && toKind === 'upcoming'
-      ? {
-          id: item.id || `h2q-${Date.now().toString(36)}`,
-          videoId: item.videoId,
-          title: item.title || item.videoId,
-          addedBy: item.addedBy || state.peer?.id || null,
-          addedByName: item.addedByName || state.name || 'Someone',
-        }
-      : {
-          id: item.id || `q2h-${Date.now().toString(36)}`,
-          videoId: item.videoId,
-          title: item.title || item.videoId,
-        };
-    dst.splice(Math.max(0, Math.min(insertAt, dst.length)), 0, normalized);
+    insertAt = Math.max(0, Math.min(insertAt, dst.length));
+    dst.splice(insertAt, 0, normalizeMovedItem(item, toKind));
   }
 
   applyQueueOrder(nextHistory, nextQueue, { emit: true });
 }
 
+function clearDragUI() {
+  els.queueList?.querySelectorAll('.dragging, .drag-over').forEach((n) => {
+    n.classList.remove('dragging', 'drag-over');
+  });
+}
+
+function hitTestQueueRow(clientY) {
+  if (!els.queueList) return null;
+  const rows = [...els.queueList.querySelectorAll('li.played, li.upcoming, li.now')];
+  for (const row of rows) {
+    const r = row.getBoundingClientRect();
+    if (clientY >= r.top && clientY <= r.bottom) {
+      const kind = row.classList.contains('played')
+        ? 'played'
+        : row.classList.contains('upcoming')
+          ? 'upcoming'
+          : 'now';
+      const index = kind === 'now' ? 0 : Number(row.dataset.index || 0);
+      const after = clientY > r.top + r.height / 2;
+      return { kind, index, after, el: row };
+    }
+  }
+  // Below all rows → end of upcoming (or played if no upcoming)
+  if (state.queue.length) return { kind: 'upcoming', index: state.queue.length - 1, after: true, el: null };
+  if (state.history.length) return { kind: 'played', index: state.history.length - 1, after: true, el: null };
+  return null;
+}
+
 function wireQueueDrag(li, kind, index) {
-  li.draggable = true;
   li.dataset.kind = kind;
   li.dataset.index = String(index);
+  li.style.touchAction = 'none';
 
-  li.addEventListener('dragstart', (e) => {
-    if (e.target.closest && e.target.closest('button')) {
-      e.preventDefault();
-      return;
-    }
-    state.drag = { kind, index };
+  const onPointerDown = (e) => {
+    if (e.button != null && e.button !== 0) return;
+    if (e.target.closest && e.target.closest('button.rm')) return;
+    e.preventDefault();
+    const pointerId = e.pointerId;
+    state.drag = { kind, index, pointerId };
     li.classList.add('dragging');
-    try {
-      e.dataTransfer.effectAllowed = 'move';
-      e.dataTransfer.setData('text/plain', `${kind}:${index}`);
-    } catch { /* ignore */ }
-  });
+    try { li.setPointerCapture(pointerId); } catch { /* ignore */ }
 
-  li.addEventListener('dragend', () => {
-    state.drag = null;
-    li.classList.remove('dragging');
-    els.queueList?.querySelectorAll('.drag-over').forEach((n) => n.classList.remove('drag-over'));
-  });
+    const onMove = (ev) => {
+      if (!state.drag || state.drag.pointerId !== pointerId) return;
+      clearDragUI();
+      li.classList.add('dragging');
+      const hit = hitTestQueueRow(ev.clientY);
+      if (hit?.el) hit.el.classList.add('drag-over');
+    };
 
-  li.addEventListener('dragover', (e) => {
-    if (!state.drag) return;
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
-    li.classList.add('drag-over');
-  });
+    const finish = (ev) => {
+      try { li.releasePointerCapture(pointerId); } catch { /* ignore */ }
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', finish);
+      window.removeEventListener('pointercancel', finish);
+      const drag = state.drag;
+      state.drag = null;
+      clearDragUI();
+      if (!drag) return;
+      const hit = hitTestQueueRow(ev.clientY);
+      if (!hit) return;
+      let toKind = hit.kind;
+      let toIndex = hit.index + (hit.after ? 1 : 0);
+      if (toKind === 'now') {
+        // Drop on Now → front of upcoming
+        toKind = 'upcoming';
+        toIndex = 0;
+      }
+      moveQueueItem(drag.kind, drag.index, toKind, toIndex);
+    };
 
-  li.addEventListener('dragleave', () => {
-    li.classList.remove('drag-over');
-  });
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', finish);
+    window.addEventListener('pointercancel', finish);
+  };
 
-  li.addEventListener('drop', (e) => {
-    e.preventDefault();
-    li.classList.remove('drag-over');
-    if (!state.drag) return;
-    const rect = li.getBoundingClientRect();
-    const after = e.clientY > rect.top + rect.height / 2;
-    let toIndex = index + (after ? 1 : 0);
-    const { kind: fromKind, index: fromIndex } = state.drag;
-    state.drag = null;
-    moveQueueItem(fromKind, fromIndex, kind, toIndex);
-  });
+  li.addEventListener('pointerdown', onPointerDown);
 }
 
 function renderQueue() {
@@ -286,22 +325,6 @@ function renderQueue() {
         <span class="by">playing now</span>
       </div>
     `;
-    // Allow dropping onto Now to insert at start of upcoming (below now)
-    li.addEventListener('dragover', (e) => {
-      if (!state.drag) return;
-      e.preventDefault();
-      li.classList.add('drag-over');
-    });
-    li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
-    li.addEventListener('drop', (e) => {
-      e.preventDefault();
-      li.classList.remove('drag-over');
-      if (!state.drag) return;
-      const { kind: fromKind, index: fromIndex } = state.drag;
-      state.drag = null;
-      // Drop on Now → place at front of upcoming
-      moveQueueItem(fromKind, fromIndex, 'upcoming', 0);
-    });
     els.queueList.appendChild(li);
   }
 
@@ -322,7 +345,6 @@ function renderQueue() {
     if (canRemove) {
       btn.addEventListener('click', () => removeFromQueue(item.id));
     }
-    btn?.addEventListener('mousedown', (e) => e.stopPropagation());
     wireQueueDrag(li, 'upcoming', index);
     els.queueList.appendChild(li);
   });
@@ -381,10 +403,12 @@ async function requestAddToQueue(raw) {
 }
 
 function maybeAutoStartQueue() {
+  // Only auto-advance when the current video actually ended.
+  // Do NOT treat CUED/UNSTARTED (warm-up sitting idle) as a reason to
+  // immediately consume the first queued add — that made the queue feel broken.
   if (state.role !== 'host' || !state.player) return;
   try {
-    const st = state.player.getPlayerState();
-    if (st === YT.PlayerState.ENDED || st === YT.PlayerState.UNSTARTED || st === YT.PlayerState.CUED) {
+    if (state.player.getPlayerState() === YT.PlayerState.ENDED) {
       playNextFromQueue();
     }
   } catch { /* ignore */ }
@@ -401,9 +425,6 @@ function pushHistoryCurrent() {
   });
   // Cap history so it doesn't grow forever
   if (state.history.length > 40) state.history.splice(0, state.history.length - 40);
-  renderQueue();
-  emitQueue();
-  syncTransportUI();
 }
 
 function syncTransportUI() {
@@ -428,8 +449,12 @@ function playVideoNow(videoId, title, { pushHistory = true } = {}) {
   if (state.role !== 'host' || !videoId || state.advancing) return;
   if (pushHistory && state.videoId && state.videoId !== videoId) pushHistoryCurrent();
   state.advancing = true;
+  state.videoId = videoId;
   state.videoTitle = title || videoId;
   setNowPlayingLabel();
+  // Refresh the queue Now row immediately — do not wait for the player callback
+  renderQueue();
+  emitQueue();
   ensurePlayer(videoId, () => {
     try {
       state.player.seekTo(0, true);
@@ -451,8 +476,6 @@ function playNextFromQueue() {
     return;
   }
   const next = state.queue.shift();
-  renderQueue();
-  emitQueue();
   playVideoNow(next.videoId, next.title || next.videoId, { pushHistory: true });
 }
 
@@ -467,11 +490,8 @@ function playPreviousFromHistory() {
   if (state.videoId) {
     const current = makeQueueItem(state.videoId, state.videoTitle, state.peer?.id, state.name);
     state.queue.unshift(current);
-    renderQueue();
-    emitQueue();
   }
   const prev = state.history.pop();
-  syncTransportUI();
   playVideoNow(prev.videoId, prev.title, { pushHistory: false });
 }
 
