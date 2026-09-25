@@ -22,7 +22,11 @@ const els = {
   hostControls: document.getElementById('host-controls'),
   guestNote: document.getElementById('guest-note'),
   videoInput: document.getElementById('video-input'),
-  load: document.getElementById('load-btn'),
+  jumpForm: document.getElementById('jump-form'),
+  prevBtn: document.getElementById('prev-btn'),
+  playToggle: document.getElementById('play-toggle-btn'),
+  playToggleLabel: document.getElementById('play-toggle-label'),
+  nextBtn: document.getElementById('next-btn'),
   queueForm: document.getElementById('queue-form'),
   queueInput: document.getElementById('queue-input'),
   queueList: document.getElementById('queue-list'),
@@ -47,6 +51,7 @@ const state = {
   videoId: DEFAULT_VIDEO,
   videoTitle: 'Warm-up jam',
   queue: [], // [{ id, videoId, title, addedBy, addedByName }]
+  history: [], // [{ videoId, title }] previously played (for Last)
   applyingRemote: false,
   hostTick: null,
   toastTimer: null,
@@ -156,6 +161,7 @@ function renderQueue() {
     els.queueList.appendChild(li);
   }
   setNowPlayingLabel();
+  syncTransportUI();
 }
 
 function applyQueueSync(msg) {
@@ -216,25 +222,110 @@ function maybeAutoStartQueue() {
   } catch { /* ignore */ }
 }
 
-function playNextFromQueue() {
-  if (state.role !== 'host' || state.advancing) return;
-  if (!state.queue.length) return;
+function pushHistoryCurrent() {
+  if (!state.videoId) return;
+  const last = state.history[state.history.length - 1];
+  if (last && last.videoId === state.videoId) return;
+  state.history.push({
+    videoId: state.videoId,
+    title: state.videoTitle || state.videoId,
+  });
+  // Cap history so it doesn't grow forever
+  if (state.history.length > 40) state.history.splice(0, state.history.length - 40);
+  syncTransportUI();
+}
+
+function syncTransportUI() {
+  if (els.prevBtn) els.prevBtn.disabled = state.role !== 'host' || state.history.length === 0;
+  if (els.nextBtn) els.nextBtn.disabled = state.role !== 'host' || state.queue.length === 0;
+  let playing = false;
+  try {
+    playing = !!(state.player && state.player.getPlayerState() === YT.PlayerState.PLAYING);
+  } catch { /* ignore */ }
+  if (els.playToggle) {
+    els.playToggle.classList.toggle('is-playing', playing);
+    els.playToggle.setAttribute('aria-label', playing ? 'Pause' : 'Play');
+    const playIcon = els.playToggle.querySelector('.icon-play');
+    const pauseIcon = els.playToggle.querySelector('.icon-pause');
+    if (playIcon) playIcon.classList.toggle('hidden', playing);
+    if (pauseIcon) pauseIcon.classList.toggle('hidden', !playing);
+  }
+  if (els.playToggleLabel) els.playToggleLabel.textContent = playing ? 'Pause' : 'Play';
+}
+
+function playVideoNow(videoId, title, { pushHistory = true } = {}) {
+  if (state.role !== 'host' || !videoId || state.advancing) return;
+  if (pushHistory && state.videoId && state.videoId !== videoId) pushHistoryCurrent();
   state.advancing = true;
-  const next = state.queue.shift();
-  renderQueue();
-  emitQueue();
-  state.videoTitle = next.title || next.videoId;
+  state.videoTitle = title || videoId;
   setNowPlayingLabel();
-  ensurePlayer(next.videoId, () => {
+  ensurePlayer(videoId, () => {
     try {
       state.player.seekTo(0, true);
       state.player.playVideo();
     } catch { /* ignore */ }
     emitState();
+    emitQueue();
+    syncTransportUI();
     state.advancing = false;
   });
-  // safety if onReady never fires
-  setTimeout(() => { state.advancing = false; }, 2000);
+  setTimeout(() => { state.advancing = false; syncTransportUI(); }, 2000);
+}
+
+function playNextFromQueue() {
+  if (state.role !== 'host' || state.advancing) return;
+  if (!state.queue.length) {
+    toast('Queue is empty');
+    syncTransportUI();
+    return;
+  }
+  const next = state.queue.shift();
+  renderQueue();
+  emitQueue();
+  playVideoNow(next.videoId, next.title || next.videoId, { pushHistory: true });
+}
+
+function playPreviousFromHistory() {
+  if (state.role !== 'host' || state.advancing) return;
+  if (!state.history.length) {
+    toast('No earlier video');
+    syncTransportUI();
+    return;
+  }
+  // Save current into the front of the queue so Next can return to it
+  if (state.videoId) {
+    const current = makeQueueItem(state.videoId, state.videoTitle, state.peer?.id, state.name);
+    state.queue.unshift(current);
+    renderQueue();
+    emitQueue();
+  }
+  const prev = state.history.pop();
+  syncTransportUI();
+  playVideoNow(prev.videoId, prev.title, { pushHistory: false });
+}
+
+function togglePlayPause() {
+  if (state.role !== 'host' || !state.player) return;
+  try {
+    const st = state.player.getPlayerState();
+    if (st === YT.PlayerState.PLAYING) state.player.pauseVideo();
+    else state.player.playVideo();
+  } catch { /* ignore */ }
+  emitState();
+  // YT onStateChange will refresh the stamp; nudge UI immediately
+  setTimeout(syncTransportUI, 80);
+}
+
+async function jumpToPastedVideo(raw) {
+  if (state.role !== 'host') return;
+  const id = extractVideoId(raw);
+  if (!id) {
+    toast('Paste a valid YouTube URL or 11-character video ID');
+    return;
+  }
+  const title = await fetchVideoTitle(id);
+  playVideoNow(id, title, { pushHistory: true });
+  if (els.videoInput) els.videoInput.value = '';
 }
 
 
@@ -566,6 +657,7 @@ function ensurePlayer(videoId, onReady) {
         onReady?.();
       },
       onStateChange: (e) => {
+        syncTransportUI();
         if (state.role !== 'host' || state.applyingRemote) return;
         if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.BUFFERING) {
           emitState();
@@ -798,6 +890,7 @@ function showRoom() {
   els.guestNote.classList.toggle('hidden', isHost);
   if (els.roomName) els.roomName.value = state.name;
   syncPassHostUI();
+  syncTransportUI();
   renderPeers();
   renderQueue();
 }
@@ -831,8 +924,10 @@ function destroySession() {
   }
   els.chatLog.innerHTML = '';
   state.queue = [];
+  state.history = [];
   state.videoTitle = 'Warm-up jam';
   renderQueue();
+  syncTransportUI();
   els.room.classList.add('hidden');
   els.lobby.classList.remove('hidden');
   setStatus('Idle');
@@ -955,23 +1050,13 @@ els.copyLink.addEventListener('click', async () => {
   }
 });
 
-els.load.addEventListener('click', async () => {
-  if (state.role !== 'host') return;
-  const id = extractVideoId(els.videoInput.value);
-  if (!id) {
-    toast('Paste a valid YouTube URL or 11-character video ID');
-    return;
-  }
-  const title = await fetchVideoTitle(id);
-  state.videoTitle = title;
-  setNowPlayingLabel();
-  ensurePlayer(id, () => {
-    state.player.seekTo(0, true);
-    state.player.playVideo();
-    emitState();
-    emitQueue();
-  });
+els.jumpForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  jumpToPastedVideo(els.videoInput?.value);
 });
+els.prevBtn?.addEventListener('click', () => playPreviousFromHistory());
+els.playToggle?.addEventListener('click', () => togglePlayPause());
+els.nextBtn?.addEventListener('click', () => playNextFromQueue());
 
 els.queueForm?.addEventListener('submit', (e) => {
   e.preventDefault();

@@ -62,8 +62,31 @@
             <div id="yt-player"></div>
           </div>
           <div id="host-controls" class="controls hidden">
-            <input id="video-input" type="url" placeholder="Paste YouTube URL or video ID" />
-            <button id="load-btn" class="btn primary" type="button">Play now</button>
+            <form id="jump-form" class="jump-form" autocomplete="off">
+              <input id="video-input" type="url" placeholder="Paste YouTube URL or video ID to jump…" />
+              <button class="btn primary jump-btn" type="submit">Go</button>
+            </form>
+            <div class="transport" role="group" aria-label="Playback controls">
+              <button id="prev-btn" class="stamp-btn stamp-prev" type="button" title="Last video" aria-label="Last video">
+                <span class="stamp-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48" width="28" height="28"><path fill="currentColor" d="M10 8h6v32h-6zm10 16L38 8v32z"/></svg>
+                </span>
+                <span class="stamp-label">Last</span>
+              </button>
+              <button id="play-toggle-btn" class="stamp-btn stamp-play" type="button" title="Play / Pause" aria-label="Play">
+                <span class="stamp-icon" aria-hidden="true">
+                  <svg class="icon-play" viewBox="0 0 48 48" width="28" height="28"><path fill="currentColor" d="M14 8v32l26-16z"/></svg>
+                  <svg class="icon-pause hidden" viewBox="0 0 48 48" width="28" height="28"><path fill="currentColor" d="M12 8h8v32h-8zm16 0h8v32h-8z"/></svg>
+                </span>
+                <span class="stamp-label" id="play-toggle-label">Play</span>
+              </button>
+              <button id="next-btn" class="stamp-btn stamp-next" type="button" title="Next video" aria-label="Next video">
+                <span class="stamp-icon" aria-hidden="true">
+                  <svg viewBox="0 0 48 48" width="28" height="28"><path fill="currentColor" d="M10 8l18 16L10 40zm22 0h6v32h-6z"/></svg>
+                </span>
+                <span class="stamp-label">Next</span>
+              </button>
+            </div>
             <label class="check-row host-pass-row" for="pass-host-toggle">
               <input id="pass-host-toggle" type="checkbox" checked />
               <span>If I leave, pick a random guest as the new host</span>
