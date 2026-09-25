@@ -58,6 +58,11 @@ const els = {
   replayMeta: document.getElementById('replay-meta'),
   replayEventList: document.getElementById('replay-event-list'),
   replayClock: document.getElementById('replay-clock'),
+  mobileTabBar: document.getElementById('mobile-tab-bar'),
+  mobilePanels: document.getElementById('mobile-panels'),
+  peopleRenameForm: document.getElementById('people-rename-form'),
+  peopleName: document.getElementById('people-name-input'),
+  passHostToggleMobile: document.getElementById('pass-host-toggle-mobile'),
 };
 
 const state = {
@@ -85,6 +90,7 @@ const state = {
   sessionLog: [], // ring buffer of structured session events
   lastPlaybackLog: { type: null, at: 0 },
   chatTab: 'current', // 'previous' | 'current'
+  mobileTab: 'queue', // 'queue' | 'chat' | 'people'
   replay: {
     active: false,
     events: [],
@@ -997,12 +1003,15 @@ function enterReplayViewer() {
   // Show room UI without PeerJS for lobby-only replay
   els.lobby.classList.add('hidden');
   els.room.classList.remove('hidden');
+  setRoomActive(true);
   if (els.hostControls) els.hostControls.classList.add('hidden');
   if (els.guestNote) {
     els.guestNote.classList.remove('hidden');
     els.guestNote.textContent = 'Replay mode — watching a recorded session (no live peers).';
   }
-  if (els.roomName) els.roomName.value = state.name || (els.name?.value || '');
+  syncMobileNameInputs();
+  setMobileTab(state.mobileTab || 'queue');
+  syncPassHostUI();
   renderPeers();
   renderQueue();
   syncTransportUI();
@@ -1027,6 +1036,7 @@ function leaveReplayViewer() {
   }
   els.room.classList.add('hidden');
   els.lobby.classList.remove('hidden');
+  setRoomActive(false);
   setStatus('Idle');
   renderQueue();
 }
@@ -1090,7 +1100,10 @@ function loadSessionForPlayback(data) {
   };
   state.replay.statusNote = '';
   document.body.classList.add('replay-active');
-  if (els.playbackBar) els.playbackBar.classList.remove('hidden');
+  if (els.playbackBar) {
+    els.playbackBar.classList.remove('hidden');
+    collapsePlaybackEventsForMobile();
+  }
 
   resetReplayMedia();
   if (lobbyOnly) enterReplayViewer();
@@ -1697,9 +1710,11 @@ function emitSettings() {
 
 function syncPassHostUI() {
   if (els.passHostToggle) els.passHostToggle.checked = !!state.passHostOnLeave;
+  if (els.passHostToggleMobile) els.passHostToggleMobile.checked = !!state.passHostOnLeave;
   if (els.passHostCreate && state.role !== 'host' && state.role !== 'guest') {
     // lobby only — leave create checkbox alone while in room
   }
+  if (els.room) els.room.classList.toggle('is-host', state.role === 'host');
 }
 
 function setPassHostOnLeave(on, { emit = true } = {}) {
@@ -1995,6 +2010,7 @@ function applyRename(peerId, newName) {
     state.name = name;
     els.name.value = name;
     if (els.roomName) els.roomName.value = name;
+    if (els.peopleName) els.peopleName.value = name;
   } else if (state.peers.has(peerId)) {
     const info = state.peers.get(peerId);
     state.peers.set(peerId, { ...info, name });
@@ -2400,13 +2416,97 @@ function startHostTick() {
   }, HOST_TICK_MS);
 }
 
+
+const MOBILE_TABS = ['queue', 'chat', 'people'];
+
+
+function collapsePlaybackEventsForMobile() {
+  const disc = document.querySelector('.playback-events-disclosure');
+  if (!disc) return;
+  const narrow = window.matchMedia && window.matchMedia('(max-width: 900px)').matches;
+  if (narrow) disc.open = false;
+  else disc.open = true;
+}
+
+function setRoomActive(on) {
+  document.body.classList.toggle('room-active', !!on);
+  if (els.mobileTabBar) {
+    if (on) els.mobileTabBar.removeAttribute('hidden');
+    else els.mobileTabBar.setAttribute('hidden', '');
+  }
+}
+
+function setMobileTab(tab) {
+  const next = MOBILE_TABS.includes(tab) ? tab : 'queue';
+  state.mobileTab = next;
+  if (els.room) {
+    els.room.classList.remove('tab-queue', 'tab-chat', 'tab-people');
+    els.room.classList.add(`tab-${next}`);
+  }
+  if (els.mobileTabBar) {
+    for (const btn of els.mobileTabBar.querySelectorAll('.mobile-tab')) {
+      const active = btn.getAttribute('data-mobile-tab') === next;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    }
+  }
+}
+
+function syncMobileNameInputs() {
+  const name = state.name || '';
+  if (els.roomName && document.activeElement !== els.roomName) els.roomName.value = name;
+  if (els.peopleName && document.activeElement !== els.peopleName) els.peopleName.value = name;
+}
+
+function wireMobileTabs() {
+  if (els.mobileTabBar) {
+    els.mobileTabBar.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-mobile-tab]');
+      if (!btn || !els.mobileTabBar.contains(btn)) return;
+      setMobileTab(btn.getAttribute('data-mobile-tab'));
+    });
+  }
+
+  const panels = els.mobilePanels;
+  if (!panels) return;
+  let startX = 0;
+  let startY = 0;
+  let tracking = false;
+
+  panels.addEventListener('touchstart', (e) => {
+    if (!e.changedTouches || !e.changedTouches[0]) return;
+    // Ignore swipes that begin on form fields
+    const t = e.target;
+    if (t && (t.closest('input, textarea, select, button, a, summary'))) return;
+    tracking = true;
+    startX = e.changedTouches[0].clientX;
+    startY = e.changedTouches[0].clientY;
+  }, { passive: true });
+
+  panels.addEventListener('touchend', (e) => {
+    if (!tracking || !e.changedTouches || !e.changedTouches[0]) return;
+    tracking = false;
+    const dx = e.changedTouches[0].clientX - startX;
+    const dy = e.changedTouches[0].clientY - startY;
+    if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy)) return;
+    const idx = MOBILE_TABS.indexOf(state.mobileTab);
+    if (idx < 0) return;
+    if (dx < 0 && idx < MOBILE_TABS.length - 1) setMobileTab(MOBILE_TABS[idx + 1]);
+    else if (dx > 0 && idx > 0) setMobileTab(MOBILE_TABS[idx - 1]);
+  }, { passive: true });
+
+  panels.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
+}
+
 function showRoom() {
   els.lobby.classList.add('hidden');
   els.room.classList.remove('hidden');
+  setRoomActive(true);
   const isHost = state.role === 'host';
   els.hostControls.classList.toggle('hidden', !isHost);
   els.guestNote.classList.toggle('hidden', isHost);
-  if (els.roomName) els.roomName.value = state.name;
+  syncMobileNameInputs();
+  setMobileTab(state.mobileTab || 'queue');
   syncPassHostUI();
   syncTransportUI();
   renderPeers();
@@ -2458,6 +2558,7 @@ function destroySession() {
   syncTransportUI();
   els.room.classList.add('hidden');
   els.lobby.classList.remove('hidden');
+  setRoomActive(false);
   setStatus('Idle');
   const u = new URL(location.href);
   u.searchParams.delete('room');
@@ -2666,13 +2767,19 @@ els.replaySpeed?.addEventListener('change', () => {
 });
 els.chatTabPrevious?.addEventListener('click', () => setChatTab('previous'));
 els.chatTabCurrent?.addEventListener('click', () => setChatTab('current'));
-els.passHostToggle?.addEventListener('change', () => {
+function onPassHostToggleChange(checked) {
   if (state.role !== 'host') {
     syncPassHostUI();
     return;
   }
-  setPassHostOnLeave(!!els.passHostToggle.checked, { emit: true });
+  setPassHostOnLeave(!!checked, { emit: true });
   toast(state.passHostOnLeave ? 'Host will pass to a guest on leave' : 'Room ends if you leave');
+}
+els.passHostToggle?.addEventListener('change', () => {
+  onPassHostToggleChange(els.passHostToggle.checked);
+});
+els.passHostToggleMobile?.addEventListener('change', () => {
+  onPassHostToggleChange(els.passHostToggleMobile.checked);
 });
 els.passHostCreate?.addEventListener('change', () => {
   // Only affects the next room you create; mirrored into state on createRoom.
@@ -2713,11 +2820,19 @@ els.chatForm.addEventListener('submit', (e) => {
 els.renameForm?.addEventListener('submit', (e) => {
   e.preventDefault();
   renameSelf(els.roomName?.value);
+  syncMobileNameInputs();
+});
+els.peopleRenameForm?.addEventListener('submit', (e) => {
+  e.preventDefault();
+  renameSelf(els.peopleName?.value);
+  syncMobileNameInputs();
 });
 
 // Boot
 els.name.value = randomName();
 syncPreviousChatAvailability();
+setMobileTab('queue');
+wireMobileTabs();
 window.__ysqSnapshot = () => {
   let playerState = null;
   try {

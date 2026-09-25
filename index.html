@@ -25,25 +25,30 @@
     </header>
 
     <section id="playback-bar" class="playback-bar panel hidden anim-pop" aria-label="Session playback">
-      <div class="playback-timeline">
+      <div class="playback-compact">
         <div id="replay-clock" class="replay-clock" aria-live="polite">0:00 / 0:00</div>
-        <ol id="replay-event-list" class="replay-event-list" aria-label="Playback events"></ol>
+        <div class="playback-controls">
+          <button id="replay-play-btn" class="btn primary" type="button">Play</button>
+          <button id="replay-pause-btn" class="btn" type="button" disabled>Pause</button>
+          <button id="replay-skip-btn" class="btn" type="button">Skip</button>
+          <button id="replay-restart-btn" class="btn playback-restart-btn" type="button">Restart</button>
+          <label class="playback-speed">
+            <span>Speed</span>
+            <select id="replay-speed">
+              <option value="1" selected>1x</option>
+              <option value="2">2x</option>
+              <option value="4">4x</option>
+            </select>
+          </label>
+          <button id="replay-exit-btn" class="btn danger" type="button">Exit replay</button>
+        </div>
       </div>
-      <div class="playback-controls">
-        <button id="replay-play-btn" class="btn primary" type="button">Play</button>
-        <button id="replay-pause-btn" class="btn" type="button" disabled>Pause</button>
-        <button id="replay-restart-btn" class="btn" type="button">Restart</button>
-        <button id="replay-skip-btn" class="btn" type="button">Skip</button>
-        <label class="playback-speed">
-          <span>Speed</span>
-          <select id="replay-speed">
-            <option value="1" selected>1x</option>
-            <option value="2">2x</option>
-            <option value="4">4x</option>
-          </select>
-        </label>
-        <button id="replay-exit-btn" class="btn danger" type="button">Exit replay</button>
-      </div>
+      <details class="playback-events-disclosure" open>
+        <summary class="playback-events-summary">Events ▾</summary>
+        <div class="playback-timeline">
+          <ol id="replay-event-list" class="replay-event-list" aria-label="Playback events"></ol>
+        </div>
+      </details>
       <p id="replay-status" class="playback-status">No session loaded</p>
       <p id="replay-meta" class="playback-meta hint"></p>
     </section>
@@ -74,10 +79,13 @@
     <section id="room" class="panel hidden anim-pop">
       <div class="room-bar">
         <div class="room-meta">
-          <button id="copy-link-btn" class="btn share" type="button">Share Link to Room</button>
+          <button id="copy-link-btn" class="btn share" type="button" title="Share link to room" aria-label="Share link to room">
+            <span class="share-full">Share Link to Room</span>
+            <span class="share-short" aria-hidden="true">Share</span>
+          </button>
           <p id="host-label" class="host-label">Host: —</p>
         </div>
-        <div class="rename-wrap">
+        <div class="rename-wrap desktop-rename">
           <p class="rename-hint">Rename your user name below</p>
           <form id="rename-form" class="rename-form" autocomplete="off">
             <label class="sr-only" for="room-name-input">Your name</label>
@@ -119,14 +127,16 @@
                 <span class="stamp-label">Next</span>
               </button>
             </div>
-            <label class="check-row host-pass-row" for="pass-host-toggle">
+            <label class="check-row host-pass-row desktop-host-pass" for="pass-host-toggle">
               <input id="pass-host-toggle" type="checkbox" checked />
               <span>If I leave, pick a random guest as the new host</span>
             </label>
           </div>
           <p id="guest-note" class="hint hidden">You’re a guest — playback follows the host. Anyone can add to the queue!</p>
+        </div>
 
-          <div class="side-block queue-block">
+        <div class="mobile-panels" id="mobile-panels">
+          <div class="side-block queue-block" data-mobile-pane="queue" id="mobile-pane-queue">
             <h2>Queue</h2>
             <p id="now-playing" class="now-playing">Now playing: —</p>
             <form id="queue-form" class="queue-form" autocomplete="off">
@@ -136,33 +146,53 @@
             <ol id="queue-list" class="queue-list"></ol>
             <p class="hint queue-empty-hint" id="queue-empty">Nothing here yet — add the next jam!</p>
           </div>
+
+          <aside class="side">
+            <div class="side-block people-block" data-mobile-pane="people" id="mobile-pane-people">
+              <h2>People</h2>
+              <div class="mobile-room-tools">
+                <div class="rename-wrap">
+                  <p class="rename-hint">Rename your user name below</p>
+                  <form id="people-rename-form" class="rename-form" autocomplete="off">
+                    <label class="sr-only" for="people-name-input">Your name</label>
+                    <input id="people-name-input" type="text" maxlength="24" placeholder="Your name" />
+                    <button class="btn" type="submit">Rename</button>
+                  </form>
+                </div>
+                <label class="check-row host-pass-row mobile-host-pass" for="pass-host-toggle-mobile">
+                  <input id="pass-host-toggle-mobile" type="checkbox" checked />
+                  <span>If I leave, pick a random guest as the new host</span>
+                </label>
+              </div>
+              <ul id="peer-list"></ul>
+              <div class="session-log-export">
+                <button id="export-log-btn" class="btn ghost export-log-btn" type="button">Export session log</button>
+                <label class="btn ghost load-session-btn export-log-btn" for="load-session-input-room">Load session for playback</label>
+                <input id="load-session-input-room" class="sr-only" type="file" accept="application/json,.json" />
+                <p class="hint session-log-hint">Action history for this visit — not a video. Load an export to replay.</p>
+              </div>
+            </div>
+            <div class="side-block chat-block" data-mobile-pane="chat" id="mobile-pane-chat">
+              <h2>Chat</h2>
+              <div class="chat-tabs hidden" role="tablist" aria-label="Chat views">
+                <button type="button" class="chat-tab hidden" id="chat-tab-previous" data-chat-tab="previous" role="tab" aria-selected="false" hidden>Previous</button>
+                <button type="button" class="chat-tab active" id="chat-tab-current" data-chat-tab="current" role="tab" aria-selected="true">Current</button>
+              </div>
+              <div id="chat-log-previous" class="chat-log hidden" role="tabpanel" aria-labelledby="chat-tab-previous" aria-live="polite"></div>
+              <div id="chat-log-current" class="chat-log" role="tabpanel" aria-labelledby="chat-tab-current" aria-live="polite"></div>
+              <form id="chat-form" class="chat-form">
+                <input id="chat-input" type="text" maxlength="400" placeholder="Say something…" autocomplete="off" />
+                <button class="btn primary" type="submit">Send</button>
+              </form>
+            </div>
+          </aside>
         </div>
 
-        <aside class="side">
-          <div class="side-block">
-            <h2>People</h2>
-            <ul id="peer-list"></ul>
-            <div class="session-log-export">
-              <button id="export-log-btn" class="btn ghost export-log-btn" type="button">Export session log</button>
-              <label class="btn ghost load-session-btn export-log-btn" for="load-session-input-room">Load session for playback</label>
-              <input id="load-session-input-room" class="sr-only" type="file" accept="application/json,.json" />
-              <p class="hint session-log-hint">Action history for this visit — not a video. Load an export to replay.</p>
-            </div>
-          </div>
-          <div class="side-block chat-block">
-            <h2>Chat</h2>
-            <div class="chat-tabs hidden" role="tablist" aria-label="Chat views">
-              <button type="button" class="chat-tab hidden" id="chat-tab-previous" data-chat-tab="previous" role="tab" aria-selected="false" hidden>Previous</button>
-              <button type="button" class="chat-tab active" id="chat-tab-current" data-chat-tab="current" role="tab" aria-selected="true">Current</button>
-            </div>
-            <div id="chat-log-previous" class="chat-log hidden" role="tabpanel" aria-labelledby="chat-tab-previous" aria-live="polite"></div>
-            <div id="chat-log-current" class="chat-log" role="tabpanel" aria-labelledby="chat-tab-current" aria-live="polite"></div>
-            <form id="chat-form" class="chat-form">
-              <input id="chat-input" type="text" maxlength="400" placeholder="Say something…" autocomplete="off" />
-              <button class="btn primary" type="submit">Send</button>
-            </form>
-          </div>
-        </aside>
+        <nav class="mobile-tab-bar" id="mobile-tab-bar" aria-label="Room panels" hidden>
+          <button type="button" class="mobile-tab active" data-mobile-tab="queue" aria-selected="true">Queue</button>
+          <button type="button" class="mobile-tab" data-mobile-tab="chat" aria-selected="false">Chat</button>
+          <button type="button" class="mobile-tab" data-mobile-tab="people" aria-selected="false">People</button>
+        </nav>
       </div>
     </section>
 
