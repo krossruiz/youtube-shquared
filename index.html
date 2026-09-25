@@ -12,8 +12,8 @@
   <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
-  <div id="app">
-    <header class="top">
+  <div id="app" class="app-stage">
+    <header class="top anim-pop">
       <div class="brand">
         <span class="logo" aria-hidden="true">🎨</span>
         <div>
@@ -24,7 +24,7 @@
       <div id="status-pill" class="pill">Idle</div>
     </header>
 
-    <section id="lobby" class="panel">
+    <section id="lobby" class="panel anim-pop">
       <label class="field">
         <span>Your name</span>
         <input id="name-input" type="text" maxlength="24" placeholder="Guest" autocomplete="nickname" />
@@ -43,16 +43,19 @@
       <p class="hint">Host controls the video. Guests stay locked in sync via peer-to-peer data channels.</p>
     </section>
 
-    <section id="room" class="panel hidden">
+    <section id="room" class="panel hidden anim-pop">
       <div class="room-bar">
         <div class="room-meta">
           <button id="copy-link-btn" class="btn share" type="button">Share Link to Room</button>
         </div>
-        <form id="rename-form" class="rename-form" autocomplete="off">
-          <label class="sr-only" for="room-name-input">Your name</label>
-          <input id="room-name-input" type="text" maxlength="24" placeholder="Your name" />
-          <button id="rename-btn" class="btn" type="submit">Rename</button>
-        </form>
+        <div class="rename-wrap">
+          <p class="rename-hint">Rename your user name below</p>
+          <form id="rename-form" class="rename-form" autocomplete="off">
+            <label class="sr-only" for="room-name-input">Your name</label>
+            <input id="room-name-input" type="text" maxlength="24" placeholder="Your name" />
+            <button id="rename-btn" class="btn" type="submit">Rename</button>
+          </form>
+        </div>
         <button id="leave-btn" class="btn danger" type="button">Leave</button>
       </div>
 

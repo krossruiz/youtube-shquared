@@ -3,6 +3,8 @@
 const DRIFT_SEC = 0.75;
 const HOST_TICK_MS = 2000;
 const DEFAULT_VIDEO = 'dQw4w9WgXcQ';
+const HOST_SESSION_KEY = 'ys-host-session';
+const HOST_RECOVER_MS = 2500; // give refreshing hosts time to reclaim their Peer id
 
 const els = {
   lobby: document.getElementById('lobby'),
@@ -347,6 +349,7 @@ function syncPassHostUI() {
 function setPassHostOnLeave(on, { emit = true } = {}) {
   state.passHostOnLeave = !!on;
   syncPassHostUI();
+  if (state.role === 'host') saveHostSession();
   if (emit && state.role === 'host') emitSettings();
 }
 
@@ -397,6 +400,7 @@ function becomeHost() {
   startHostTick();
   history.replaceState(null, '', roomUrl(state.peer.id));
   setStatus(state.connections.size ? `Host · ${state.connections.size} linked` : 'Host · waiting for reconnects', 'ok');
+  saveHostSession();
   toast('You’re the new host — share the updated link');
   // Push authoritative playback + queue as people reconnect (also on hello)
   emitState();
@@ -491,7 +495,7 @@ function beginHostRecovery(deadHostId) {
     }
     handleHostPass(elected, { reason: 'recover' });
     dropPeerFromRoster(deadHostId);
-  }, 500);
+  }, HOST_RECOVER_MS);
 }
 
 function transferHostThenLeave() {
@@ -509,6 +513,8 @@ function transferHostThenLeave() {
 }
 
 function leaveRoom() {
+  // Intentional leave — don't reclaim this room on refresh
+  clearHostSession();
   if (state.role === 'host' && state.passHostOnLeave && state.connections.size > 0) {
     transferHostThenLeave();
     return;
@@ -936,9 +942,38 @@ function destroySession() {
   history.replaceState(null, '', u.pathname + u.search);
 }
 
-function createPeer() {
+
+function loadHostSession() {
+  try {
+    const raw = sessionStorage.getItem(HOST_SESSION_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !data.roomId) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function saveHostSession() {
+  if (state.role !== 'host' || !state.hostId) return;
+  try {
+    sessionStorage.setItem(HOST_SESSION_KEY, JSON.stringify({
+      roomId: state.hostId,
+      name: state.name,
+      passHostOnLeave: !!state.passHostOnLeave,
+      savedAt: Date.now(),
+    }));
+  } catch { /* ignore quota */ }
+}
+
+function clearHostSession() {
+  try { sessionStorage.removeItem(HOST_SESSION_KEY); } catch { /* ignore */ }
+}
+
+function createPeer(preferredId = null) {
   return new Promise((resolve, reject) => {
-    const peer = new Peer({
+    const opts = {
       debug: 1,
       config: {
         iceServers: [
@@ -946,9 +981,10 @@ function createPeer() {
           { urls: 'stun:global.stun.twilio.com:3478' },
         ],
       },
-    });
+    };
+    const peer = preferredId ? new Peer(String(preferredId), opts) : new Peer(opts);
     const fail = (err) => {
-      peer.destroy();
+      try { peer.destroy(); } catch { /* ignore */ }
       reject(err);
     };
     peer.on('error', fail);
@@ -959,29 +995,36 @@ function createPeer() {
   });
 }
 
-async function createRoom() {
+async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created — share the link', quiet = false } = {}) {
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
-  setStatus('Connecting…', 'warn');
-  try {
-    const { peer, id } = await createPeer();
-    state.peer = peer;
-    state.role = 'host';
-    state.hostId = id;
+  if (!quiet) setStatus(preferredId ? 'Reclaiming host…' : 'Connecting…', 'warn');
+  const { peer, id } = await createPeer(preferredId);
+  state.peer = peer;
+  state.role = 'host';
+  state.hostId = id;
+  if (preferredId == null) {
     state.passHostOnLeave = els.passHostCreate ? !!els.passHostCreate.checked : true;
-    syncPassHostUI();
-    ensureAcceptingConnections();
-    peer.on('error', (err) => {
-      console.error(err);
-      toast(err?.message || 'Peer error');
-      setStatus('Error', 'err');
-    });
-    showRoom();
-    ensurePlayer(DEFAULT_VIDEO);
-    startHostTick();
-    setStatus('Host · waiting', 'ok');
-    history.replaceState(null, '', roomUrl(id));
-    toast('Room created — share the link');
+  }
+  syncPassHostUI();
+  ensureAcceptingConnections();
+  peer.on('error', (err) => {
+    console.error(err);
+    toast(err?.message || 'Peer error');
+    setStatus('Error', 'err');
+  });
+  showRoom();
+  ensurePlayer(DEFAULT_VIDEO);
+  startHostTick();
+  setStatus('Host · waiting', 'ok');
+  history.replaceState(null, '', roomUrl(id));
+  saveHostSession();
+  if (toastMsg) toast(toastMsg);
+}
+
+async function createRoom() {
+  try {
+    await createRoomAsHost(null);
   } catch (err) {
     console.error(err);
     setStatus('Failed', 'err');
@@ -995,6 +1038,7 @@ async function joinRoom(roomCode) {
     toast('Enter a room code');
     return;
   }
+  clearHostSession();
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
   setStatus('Connecting…', 'warn');
@@ -1005,12 +1049,19 @@ async function joinRoom(roomCode) {
     state.hostId = code;
     peer.on('error', (err) => {
       console.error(err);
-      toast(err?.type === 'peer-unavailable' ? 'Room not found' : (err?.message || 'Peer error'));
+      const missing = err?.type === 'peer-unavailable';
+      toast(missing ? 'Room not found' : (err?.message || 'Peer error'));
       setStatus('Error', 'err');
+      if (missing) {
+        // Drop phantom host row and bounce to lobby
+        state.peers.delete(code);
+        renderPeers();
+        setTimeout(() => destroySession(), 600);
+      }
     });
     const conn = peer.connect(code, { reliable: true });
     wireConnection(conn, 'host');
-    state.peers.set(code, { name: 'Host', role: 'host' });
+    // Don't invent a Host row until hello confirms a live host
     showRoom();
     ensurePlayer(DEFAULT_VIDEO);
     history.replaceState(null, '', roomUrl(code));
@@ -1020,6 +1071,32 @@ async function joinRoom(roomCode) {
     setStatus('Failed', 'err');
     toast(err?.message || 'Could not join room');
   }
+}
+
+/** On ?room= load: reclaim host if this tab previously hosted that room, else join as guest. */
+async function enterRoomFromUrl(roomCode) {
+  const code = (roomCode || '').trim();
+  if (!code) return;
+  const saved = loadHostSession();
+  if (saved && saved.roomId === code) {
+    if (saved.name) {
+      state.name = saved.name;
+      els.name.value = saved.name;
+    }
+    if (typeof saved.passHostOnLeave === 'boolean') {
+      state.passHostOnLeave = saved.passHostOnLeave;
+      if (els.passHostCreate) els.passHostCreate.checked = saved.passHostOnLeave;
+    }
+    try {
+      await createRoomAsHost(code, { toastMsg: 'Welcome back — you’re still the host' });
+      return;
+    } catch (err) {
+      console.warn('host reclaim failed, joining as guest', err);
+      clearHostSession();
+      toast('Couldn’t reclaim host — joining as guest');
+    }
+  }
+  await joinRoom(code);
 }
 
 // UI events
@@ -1088,6 +1165,6 @@ const params = new URLSearchParams(location.search);
 const autoRoom = params.get('room');
 if (autoRoom) {
   els.roomInput.value = autoRoom;
-  // Wait a tick so YT API can start loading; join still creates player later
-  setTimeout(() => joinRoom(autoRoom), 300);
+  // Wait a tick so YT API can start loading; reclaim host if this tab hosted before
+  setTimeout(() => enterRoomFromUrl(autoRoom), 300);
 }

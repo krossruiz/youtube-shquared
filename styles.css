@@ -37,6 +37,8 @@ html, body {
       #7ec8ff 18px 36px
     );
   background-attachment: fixed;
+  background-size: 100% 100%, 100% 100%, 100% 100%, 100% 100%, 100% 100%, 56px 56px;
+  animation: confetti-drift 28s linear infinite;
 }
 
 button, input { font: inherit; color: inherit; }
@@ -528,4 +530,84 @@ input:focus {
 .host-pass-row {
   grid-column: 1 / -1;
   margin: 4px 0 0;
+}
+
+
+/* ---- Motion / Kid Pix energy ---- */
+@keyframes confetti-drift {
+  0% { background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 0 0; }
+  100% { background-position: 0 0, 0 0, 0 0, 0 0, 0 0, 56px 56px; }
+}
+@keyframes pop-in {
+  0% { opacity: 0; transform: translateY(14px) scale(0.96) rotate(-0.6deg); }
+  70% { opacity: 1; transform: translateY(-3px) scale(1.02) rotate(0.4deg); }
+  100% { opacity: 1; transform: none; }
+}
+@keyframes stamp-wiggle {
+  0%, 100% { transform: rotate(0deg); }
+  25% { transform: rotate(-4deg) scale(1.04); }
+  75% { transform: rotate(4deg) scale(1.04); }
+}
+@keyframes logo-spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+@keyframes hint-pulse {
+  0%, 100% { transform: translateY(0); box-shadow: 3px 3px 0 #1a1a1a; }
+  50% { transform: translateY(-2px); box-shadow: 4px 5px 0 #1a1a1a; }
+}
+@keyframes chat-slide {
+  from { opacity: 0; transform: translateX(-10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes peer-bounce {
+  from { opacity: 0; transform: scale(0.85); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes toast-pop {
+  0% { opacity: 0; transform: translate(-50%, 12px) scale(0.9); }
+  100% { opacity: 1; transform: translate(-50%, 0) scale(1); }
+}
+
+.anim-pop { animation: pop-in 0.45s cubic-bezier(.2,1.4,.3,1) both; }
+.logo { animation: logo-spin 14s linear infinite; }
+.stamp-btn:hover:not(:disabled) { animation: stamp-wiggle 0.35s ease; }
+.stamp-btn:active:not(:disabled) { animation: none; }
+
+.rename-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: min(100%, 280px);
+}
+.rename-hint {
+  margin: 0;
+  padding: 8px 12px;
+  font-family: var(--font-display);
+  font-size: 1.05rem;
+  letter-spacing: 0.02em;
+  color: #1a1a1a;
+  background: var(--crayon-yellow);
+  border: 3px solid #1a1a1a;
+  border-radius: 14px;
+  box-shadow: 3px 3px 0 #1a1a1a;
+  text-shadow: 1px 1px 0 #fff;
+  animation: hint-pulse 2.2s ease-in-out infinite;
+}
+.chat-line { animation: chat-slide 0.28s ease-out both; }
+#peer-list li { animation: peer-bounce 0.28s cubic-bezier(.2,1.4,.3,1) both; }
+.toast:not(.hidden) { animation: toast-pop 0.28s cubic-bezier(.2,1.4,.3,1) both; }
+.side-block { transition: transform 0.15s ease, box-shadow 0.15s ease; }
+.side-block:hover { transform: translate(-2px, -2px); }
+#player-wrap { transition: box-shadow 0.2s ease, transform 0.2s ease; }
+#player-wrap:hover { transform: translate(-1px, -1px); box-shadow: 7px 7px 0 var(--crayon-purple); }
+.pill { transition: transform 0.12s ease; }
+.pill.ok { animation: peer-bounce 0.35s ease; }
+
+@media (prefers-reduced-motion: reduce) {
+  html, body, .logo, .rename-hint, .anim-pop, .stamp-btn:hover:not(:disabled),
+  .chat-line, #peer-list li, .toast:not(.hidden), .pill.ok {
+    animation: none !important;
+  }
+  .side-block:hover, #player-wrap:hover { transform: none; }
 }
