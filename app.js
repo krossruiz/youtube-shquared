@@ -99,6 +99,8 @@ const state = {
     lobbyOnly: false,
     meta: null,
     statusNote: '',
+    mediaApplySeq: 0,
+    scrubbing: false,
   },
 };
 
@@ -183,7 +185,24 @@ function logPlaybackTransition(ytState) {
     return;
   }
   state.lastPlaybackLog = { type, at: now };
-  logSession(type, { videoId: state.videoId, title: state.videoTitle });
+  logSession(type, {
+    videoId: state.videoId,
+    title: state.videoTitle,
+    time: getPlayerTimeSec(),
+    rate: getPlayerRate(),
+  });
+}
+
+/** Host-only: log YouTube playback rate changes (keyboard / context menu / UI). */
+function logPlaybackRateChange(rate) {
+  if (state.replay.active || state.role !== 'host' || state.applyingRemote) return;
+  const r = Number(rate);
+  logSession('rate', {
+    videoId: state.videoId,
+    title: state.videoTitle,
+    rate: Number.isFinite(r) && r > 0 ? r : getPlayerRate(),
+    time: getPlayerTimeSec(),
+  });
 }
 
 function exportSessionLog() {
@@ -220,6 +239,33 @@ function formatReplayClock(ms) {
   const m = Math.floor(total / 60);
   const s = total % 60;
   return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+/** Format media position in seconds as m:ss for event labels. */
+function formatMediaTime(sec) {
+  const total = Math.max(0, Math.floor(Number(sec) || 0));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function getPlayerTimeSec() {
+  try {
+    if (state.player && typeof state.player.getCurrentTime === 'function') {
+      return state.player.getCurrentTime() || 0;
+    }
+  } catch { /* ignore */ }
+  return 0;
+}
+
+function getPlayerRate() {
+  try {
+    if (state.player && typeof state.player.getPlaybackRate === 'function') {
+      const r = state.player.getPlaybackRate();
+      if (Number.isFinite(r) && r > 0) return r;
+    }
+  } catch { /* ignore */ }
+  return 1;
 }
 
 function syncPreviousChatAvailability() {
@@ -296,7 +342,14 @@ function updateReplayClock() {
   const elapsed = Math.min(Math.max(0, replayElapsedMs()), replayTotalMs() || Infinity);
   const total = replayTotalMs();
   const shown = Number.isFinite(elapsed) ? elapsed : replayElapsedMs();
-  els.replayClock.textContent = `${formatReplayClock(shown)} / ${formatReplayClock(total)}`;
+  let line = `${formatReplayClock(shown)} / ${formatReplayClock(total)}`;
+  if (state.player) {
+    const media = formatMediaTime(getPlayerTimeSec());
+    const rate = getPlayerRate();
+    const rateLabel = rate === 1 ? '1x' : `${rate}x`;
+    line += ` · media ${media} · ${rateLabel}`;
+  }
+  els.replayClock.textContent = line;
 }
 
 function startReplayClockTicker() {
@@ -343,9 +396,26 @@ function replayEventLabel(ev) {
     case 'next':
     case 'last':
     case 'go':
-    case 'play':
-    case 'pause':
       return `${ev.type} · ${clip(detail.title || detail.videoId) || (by || '—')}`;
+    case 'play':
+    case 'pause': {
+      const title = clip(detail.title || detail.videoId) || (by || '—');
+      const t = Number(detail.time);
+      if (Number.isFinite(t) && t >= 0) {
+        return `${ev.type} · ${title} @ ${formatMediaTime(t)}`;
+      }
+      return `${ev.type} · ${title}`;
+    }
+    case 'rate':
+    case 'speed': {
+      const r = Number(detail.rate != null ? detail.rate : detail.speed);
+      const rateStr = Number.isFinite(r) ? `${r}x` : '?x';
+      const t = Number(detail.time);
+      if (Number.isFinite(t) && t >= 0) {
+        return `speed · ${rateStr} @ ${formatMediaTime(t)}`;
+      }
+      return `speed · ${rateStr}`;
+    }
     case 'room-create':
     case 'room-join':
     case 'room-leave':
@@ -417,9 +487,15 @@ function seekReplayTo(index) {
   stopReplayClockTicker();
   r.playing = false;
   r.statusNote = '';
+  // Scrub applies must cue/pause — never autoplay historical play/next/rate events.
+  r.scrubbing = true;
   resetReplayMedia();
-  for (let j = 0; j <= i; j += 1) {
-    applyReplayEvent(r.events[j]);
+  try {
+    for (let j = 0; j <= i; j += 1) {
+      applyReplayEvent(r.events[j]);
+    }
+  } finally {
+    r.scrubbing = false;
   }
   r.index = i + 1;
   r.elapsedMs = (r.events[i].at || 0) - r.t0;
@@ -471,19 +547,214 @@ function replayElapsedMs() {
   return r.elapsedMs + (performance.now() - r.wallStart) * r.speed;
 }
 
-function applyReplayVideo(videoId, title, { pushHistory = true } = {}) {
+function getYtPlayerStateSafe() {
+  try {
+    if (state.player && typeof state.player.getPlayerState === 'function') {
+      return state.player.getPlayerState();
+    }
+  } catch { /* ignore */ }
+  return typeof YT !== 'undefined' && YT.PlayerState ? YT.PlayerState.UNSTARTED : -1;
+}
+
+function getPlayerVideoIdSafe() {
+  try {
+    if (state.player && typeof state.player.getVideoData === 'function') {
+      const d = state.player.getVideoData();
+      if (d && d.video_id) return d.video_id;
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+/** Clamp media time to duration when known (past-EOF seeks flake on short clips). */
+function clampReplayMediaTime(t) {
+  const n = Number(t);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  try {
+    if (state.player && typeof state.player.getDuration === 'function') {
+      const d = state.player.getDuration();
+      if (Number.isFinite(d) && d > 0) {
+        return Math.min(n, Math.max(0, d - 0.25));
+      }
+    }
+  } catch { /* ignore */ }
+  return n;
+}
+
+/**
+ * Wait until YT player is not UNSTARTED (-1), or timeout (~3s), then run cb.
+ * Used so seek/play/pause/rate are not issued against an unstarted iframe.
+ */
+function isYtPlayerMediaReady(st) {
+  if (typeof YT === 'undefined' || !YT.PlayerState) {
+    return st === 1 || st === 2 || st === 3 || st === 5;
+  }
+  // Never treat UNSTARTED (-1) or ENDED (0) as ready — seeks no-op there.
+  return (
+    st === YT.PlayerState.PLAYING
+    || st === YT.PlayerState.PAUSED
+    || st === YT.PlayerState.BUFFERING
+    || st === YT.PlayerState.CUED
+  );
+}
+
+function whenPlayerReady(cb, { timeoutMs = 3000 } = {}) {
+  const started = performance.now();
+  const tick = () => {
+    const st = getYtPlayerStateSafe();
+    if (isYtPlayerMediaReady(st)) {
+      cb();
+      return;
+    }
+    if (performance.now() - started >= timeoutMs) {
+      cb();
+      return;
+    }
+    setTimeout(tick, 50);
+  };
+  tick();
+}
+
+/**
+ * Robust media apply for session replay: load/cue if needed, wait for readiness,
+ * clamp time, seek, set rate, then play or pause. Stale applies are dropped via
+ * mediaApplySeq (seekReplayTo fires many events in one loop).
+ *
+ * Expected seek sequence:
+ * 1) If video changed OR player UNSTARTED/ENDED → cueVideoById (pause) or
+ *    loadVideoById (play) with startSeconds
+ * 2) whenPlayerReady → not -1 (CUED/PLAYING/PAUSED/BUFFERING) or ~3s timeout
+ * 3) clamp time to max(0, duration-0.25); seekTo; setPlaybackRate; play/pause
+ * 4) If play=false, re-pause shortly after (loadVideoById can autoplay)
+ */
+function applyPlayerMedia({ videoId, time, rate, play } = {}) {
+  const seq = ++state.replay.mediaApplySeq;
+  const vid = videoId || state.videoId || DEFAULT_VIDEO;
+  const hasTime = Number.isFinite(Number(time)) && Number(time) >= 0;
+  const rawTime = hasTime ? Number(time) : undefined;
+  const hasRate = Number.isFinite(Number(rate)) && Number(rate) > 0;
+  const wantRate = hasRate ? Number(rate) : undefined;
+  const scrubbing = !!(state.replay && state.replay.scrubbing);
+  const wantPlay = scrubbing ? false : !!play;
+
+  const stillCurrent = () => seq === state.replay.mediaApplySeq;
+
+  const finish = () => {
+    if (!stillCurrent() || !state.player) return;
+    try {
+      let t = rawTime;
+      if (t != null) {
+        t = clampReplayMediaTime(t);
+        state.player.seekTo(t, true);
+      }
+      if (wantRate != null && typeof state.player.setPlaybackRate === 'function') {
+        state.player.setPlaybackRate(wantRate);
+      }
+      if (wantPlay) state.player.playVideo();
+      else state.player.pauseVideo();
+    } catch { /* ignore */ }
+    syncTransportUI();
+    updateReplayClock();
+    // YouTube often autoplays after loadVideoById — stick the pause
+    if (!wantPlay) {
+      setTimeout(() => {
+        if (!stillCurrent() || !state.player) return;
+        try {
+          const st = getYtPlayerStateSafe();
+          if (st === YT.PlayerState.PLAYING || st === YT.PlayerState.BUFFERING) {
+            state.player.pauseVideo();
+          }
+        } catch { /* ignore */ }
+        syncTransportUI();
+        updateReplayClock();
+      }, 120);
+    }
+  };
+
+  const unstarted = typeof YT !== 'undefined' && YT.PlayerState
+    ? YT.PlayerState.UNSTARTED
+    : -1;
+  const ended = typeof YT !== 'undefined' && YT.PlayerState
+    ? YT.PlayerState.ENDED
+    : 0;
+  const st = getYtPlayerStateSafe();
+  // Prefer the iframe's actual video_id — callers may already have updated state.videoId.
+  // If getVideoData is unavailable, treat as changed so we still cue/load with startSeconds.
+  const loadedVid = getPlayerVideoIdSafe();
+  const videoChanged = !!(vid && (!loadedVid || loadedVid !== vid));
+  const needsLoad = !state.player || videoChanged || st === unstarted || st === ended;
+
+  const startSeconds = rawTime != null ? Math.max(0, rawTime) : 0;
+
+  const afterReady = () => {
+    if (!stillCurrent()) return;
+    whenPlayerReady(() => {
+      if (!stillCurrent()) return;
+      finish();
+    });
+  };
+
+  if (vid) {
+    state.videoId = vid;
+  }
+
+  if (!state.player) {
+    ensurePlayer(vid, afterReady, {
+      startSeconds,
+      cue: !wantPlay,
+      waitReady: true,
+    });
+    return;
+  }
+
+  if (needsLoad) {
+    state.applyingRemote = true;
+    try {
+      if (wantPlay) {
+        state.player.loadVideoById({ videoId: vid, startSeconds });
+      } else if (typeof state.player.cueVideoById === 'function') {
+        state.player.cueVideoById({ videoId: vid, startSeconds });
+      } else {
+        state.player.loadVideoById({ videoId: vid, startSeconds });
+      }
+    } catch { /* ignore */ }
+    setTimeout(() => { state.applyingRemote = false; }, 400);
+    afterReady();
+    return;
+  }
+
+  // Same video, player already past unstarted — seek/rate/transport directly
+  finish();
+}
+
+function applyReplayVideo(videoId, title, { pushHistory = true, startSeconds = 0 } = {}) {
   if (!videoId) return;
   if (pushHistory && state.videoId && state.videoId !== videoId) pushHistoryCurrent();
   state.videoId = videoId;
   state.videoTitle = title || videoId;
   setNowPlayingLabel();
   renderQueue();
-  ensurePlayer(videoId, () => {
-    try {
-      state.player.seekTo(0, true);
-      state.player.playVideo();
-    } catch { /* ignore */ }
-    syncTransportUI();
+  const start = Number.isFinite(Number(startSeconds)) ? Math.max(0, Number(startSeconds)) : 0;
+  const shouldPlay = !!(state.replay && state.replay.active && state.replay.playing && !state.replay.scrubbing);
+  applyPlayerMedia({ videoId, time: start, rate: 1, play: shouldPlay });
+}
+
+/** Seek (and optionally set rate) then play or pause during session replay. */
+function applyReplayPlayPause(detail, { play }) {
+  if (detail.videoId && detail.videoId !== state.videoId) {
+    state.videoTitle = detail.title || detail.videoId;
+    setNowPlayingLabel();
+    renderQueue();
+  } else if (detail.title && detail.videoId) {
+    state.videoTitle = detail.title;
+    setNowPlayingLabel();
+  }
+  const rate = detail.rate != null ? Number(detail.rate) : NaN;
+  applyPlayerMedia({
+    videoId: detail.videoId || state.videoId,
+    time: detail.time,
+    rate: Number.isFinite(rate) && rate > 0 ? rate : undefined,
+    play,
   });
 }
 
@@ -580,19 +851,22 @@ function applyReplayEvent(ev) {
       break;
     }
     case 'play': {
-      if (detail.videoId && detail.videoId !== state.videoId) {
-        applyReplayVideo(detail.videoId, detail.title || detail.videoId, { pushHistory: false });
-      } else if (state.player) {
-        try { state.player.playVideo(); } catch { /* ignore */ }
-        syncTransportUI();
-      }
+      applyReplayPlayPause(detail, { play: true });
       break;
     }
     case 'pause': {
-      if (state.player) {
-        try { state.player.pauseVideo(); } catch { /* ignore */ }
-        syncTransportUI();
+      applyReplayPlayPause(detail, { play: false });
+      break;
+    }
+    case 'rate':
+    case 'speed': {
+      const rate = Number(detail.rate != null ? detail.rate : detail.speed);
+      if (!Number.isFinite(rate) || rate <= 0) {
+        state.replay.statusNote = 'rate/speed missing rate';
+        break;
       }
+      const keepPlaying = !!(state.replay.playing && !state.replay.scrubbing);
+      applyReplayPlayPause({ ...detail, rate }, { play: keepPlaying });
       break;
     }
     case 'chat': {
@@ -1749,32 +2023,59 @@ function renameSelf(rawName) {
   toast(`Renamed to ${name}`);
 }
 
-function ensurePlayer(videoId, onReady) {
+function ensurePlayer(videoId, onReady, opts = {}) {
   state.videoId = videoId;
+  const startRaw = opts.startSeconds;
+  const startSeconds = Number.isFinite(Number(startRaw)) ? Math.max(0, Number(startRaw)) : undefined;
+  const useCue = !!opts.cue;
+  const waitReady = !!opts.waitReady;
+  const invokeReady = () => {
+    if (waitReady) whenPlayerReady(() => onReady?.());
+    else onReady?.();
+  };
   if (state.player) {
     state.applyingRemote = true;
-    state.player.loadVideoById(videoId);
+    try {
+      if (useCue && typeof state.player.cueVideoById === 'function') {
+        if (startSeconds != null) state.player.cueVideoById({ videoId, startSeconds });
+        else state.player.cueVideoById(videoId);
+      } else if (startSeconds != null) {
+        state.player.loadVideoById({ videoId, startSeconds });
+      } else {
+        state.player.loadVideoById(videoId);
+      }
+    } catch { /* ignore */ }
     setTimeout(() => { state.applyingRemote = false; }, 400);
-    onReady?.();
+    // Existing-player load/cue is async — optionally wait past UNSTARTED (-1)
+    invokeReady();
     return;
   }
+  const playerVars = {
+    autoplay: 0,
+    modestbranding: 1,
+    rel: 0,
+    playsinline: 1,
+    enablejsapi: 1,
+    origin: location.origin,
+  };
+  if (startSeconds != null) playerVars.start = Math.floor(startSeconds);
   state.player = new YT.Player('yt-player', {
     videoId,
-    playerVars: {
-      autoplay: 0,
-      modestbranding: 1,
-      rel: 0,
-      playsinline: 1,
-      enablejsapi: 1,
-      origin: location.origin,
-    },
+    playerVars,
     events: {
       onReady: () => {
         state.ytReady = true;
-        onReady?.();
+        // Fresh player: optionally cue to startSeconds without autoplay
+        if (useCue && startSeconds != null && typeof state.player.cueVideoById === 'function') {
+          try {
+            state.player.cueVideoById({ videoId, startSeconds });
+          } catch { /* ignore */ }
+        }
+        invokeReady();
       },
       onStateChange: (e) => {
         syncTransportUI();
+        if (state.replay && state.replay.active) updateReplayClock();
         if (state.role === 'host' && !state.applyingRemote && !state.replay.active) {
           logPlaybackTransition(e.data);
         }
@@ -1785,6 +2086,11 @@ function ensurePlayer(videoId, onReady) {
         if (e.data === YT.PlayerState.ENDED) {
           if (state.replay.active) return;
           playNextFromQueue({ auto: true });
+        }
+      },
+      onPlaybackRateChange: (e) => {
+        if (state.role === 'host' && !state.applyingRemote && !state.replay.active) {
+          logPlaybackRateChange(e.data);
         }
       },
     },
@@ -2412,6 +2718,28 @@ els.renameForm?.addEventListener('submit', (e) => {
 // Boot
 els.name.value = randomName();
 syncPreviousChatAvailability();
+window.__ysqSnapshot = () => {
+  let playerState = null;
+  try {
+    if (state.player && typeof state.player.getPlayerState === 'function') {
+      playerState = state.player.getPlayerState();
+    }
+  } catch { /* ignore */ }
+  return {
+    time: getPlayerTimeSec(),
+    rate: getPlayerRate(),
+    playerState,
+    videoId: state.videoId,
+    replay: {
+      active: !!(state.replay && state.replay.active),
+      playing: !!(state.replay && state.replay.playing),
+      index: state.replay ? state.replay.index : 0,
+      elapsedMs: state.replay ? replayElapsedMs() : 0,
+      totalMs: state.replay ? replayTotalMs() : 0,
+    },
+  };
+};
+
 window.onYouTubeIframeAPIReady = () => {
   state.ytReady = true;
 };
