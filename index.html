@@ -47,6 +47,7 @@
       <div class="room-bar">
         <div class="room-meta">
           <button id="copy-link-btn" class="btn share" type="button">Share Link to Room</button>
+          <p id="host-label" class="host-label">Host: —</p>
         </div>
         <div class="rename-wrap">
           <p class="rename-hint">Rename your user name below</p>
@@ -101,7 +102,7 @@
             <h2>Queue</h2>
             <p id="now-playing" class="now-playing">Now playing: —</p>
             <form id="queue-form" class="queue-form" autocomplete="off">
-              <input id="queue-input" type="url" placeholder="Paste a YouTube link to add…" />
+              <input id="queue-input" type="text" placeholder="Paste a YouTube / playlist link to add…" />
               <button class="btn primary" type="submit">Add</button>
             </form>
             <ol id="queue-list" class="queue-list"></ol>

@@ -39,6 +39,7 @@ const els = {
   chatForm: document.getElementById('chat-form'),
   chatInput: document.getElementById('chat-input'),
   toast: document.getElementById('toast'),
+  hostLabel: document.getElementById('host-label'),
 };
 
 const state = {
@@ -105,6 +106,27 @@ function extractVideoId(input) {
   return null;
 }
 
+
+
+function extractPlaylistId(input) {
+  if (!input) return null;
+  const s = String(input).trim();
+  // Raw playlist / channel-uploads / liked / mix ids
+  if (/^(PL|UU|LL|OL)[a-zA-Z0-9_-]{10,}$/.test(s)) return s;
+  try {
+    const u = new URL(s);
+    if (!u.hostname.includes('youtube.com') && !u.hostname.includes('youtu.be')) return null;
+    const list = u.searchParams.get('list');
+    if (!list) return null;
+    // watch?v=…&list=… → single video only (keep current behavior)
+    const v = u.searchParams.get('v');
+    if (v && /^[a-zA-Z0-9_-]{11}$/.test(v)) return null;
+    // /playlist?list=… or list= without a video id
+    if (u.pathname.includes('/playlist') || !v) return list;
+    return null;
+  } catch { /* not a URL */ }
+  return null;
+}
 
 function makeQueueItem(videoId, title, addedBy, addedByName) {
   return {
@@ -380,9 +402,14 @@ function removeFromQueue(qid) {
 }
 
 async function requestAddToQueue(raw) {
+  const playlistId = extractPlaylistId(raw);
+  if (playlistId) {
+    await requestAddPlaylistToQueue(playlistId);
+    return;
+  }
   const videoId = extractVideoId(raw);
   if (!videoId) {
-    toast('Paste a valid YouTube URL or video ID');
+    toast('Paste a valid YouTube URL, playlist link, or video ID');
     return;
   }
   const title = await fetchVideoTitle(videoId);
@@ -400,6 +427,42 @@ async function requestAddToQueue(raw) {
   } else {
     broadcast({ type: 'queue-add', item });
     toast(alreadyQueued ? `Requested again: ${title}` : `Requested: ${title}`);
+  }
+  if (els.queueInput) els.queueInput.value = '';
+}
+
+async function requestAddPlaylistToQueue(playlistId) {
+  toast('Loading playlist…', 4000);
+  let data;
+  try {
+    const res = await fetch(`/api/playlist?list=${encodeURIComponent(playlistId)}`);
+    data = await res.json().catch(() => null);
+    if (!res.ok || !data || !data.ok) {
+      toast((data && data.error) || 'Could not load playlist');
+      return;
+    }
+  } catch {
+    toast('Could not load playlist');
+    return;
+  }
+  const videos = Array.isArray(data.videos) ? data.videos : [];
+  if (!videos.length) {
+    toast('Playlist is empty');
+    return;
+  }
+  const plTitle = data.title || 'Playlist';
+  const items = videos.map((v) =>
+    makeQueueItem(v.videoId, v.title || v.videoId, state.peer?.id, state.name)
+  );
+  if (state.role === 'host') {
+    for (const item of items) state.queue.push(item);
+    renderQueue();
+    emitQueue();
+    toast(`Queued ${items.length} from ${plTitle}`);
+    maybeAutoStartQueue();
+  } else {
+    broadcast({ type: 'queue-add-many', items });
+    toast(`Requested ${items.length} from ${plTitle}`);
   }
   if (els.queueInput) els.queueInput.value = '';
 }
@@ -757,6 +820,18 @@ function emitState() {
   broadcast({ type: 'state', ...currentPlayback() });
 }
 
+function updateHostLabel() {
+  if (!els.hostLabel) return;
+  let name = '—';
+  if (state.role === 'host') {
+    name = state.name || 'Host';
+  } else if (state.hostId) {
+    if (state.peer?.id === state.hostId) name = state.name || 'Host';
+    else name = state.peers.get(state.hostId)?.name || 'Host';
+  }
+  els.hostLabel.textContent = `Host: ${name}`;
+}
+
 function renderPeers() {
   els.peerList.innerHTML = '';
   const rows = [];
@@ -774,6 +849,7 @@ function renderPeers() {
     li.innerHTML = `<span>${escapeHtml(p.name || 'Someone')}</span><span class="role">${p.role === 'host' ? 'Host' : 'Guest'}${you}</span>`;
     els.peerList.appendChild(li);
   }
+  updateHostLabel();
 }
 
 function escapeHtml(s) {
@@ -987,6 +1063,26 @@ function handleMessage(fromId, raw) {
         maybeAutoStartQueue();
       } else if (state.role !== 'host') {
         // Relayed copy for display if host echoed — ignore; wait for queue-sync
+      }
+      break;
+    }
+    case 'queue-add-many': {
+      if (state.role === 'host' && Array.isArray(msg.items)) {
+        const guestName = state.peers.get(fromId)?.name || 'Guest';
+        for (const raw of msg.items) {
+          if (!raw || !raw.videoId) continue;
+          const item = {
+            id: raw.id || makeQueueItem(raw.videoId).id,
+            videoId: raw.videoId,
+            title: raw.title || raw.videoId,
+            addedBy: raw.addedBy || fromId,
+            addedByName: raw.addedByName || guestName,
+          };
+          state.queue.push(item);
+        }
+        renderQueue();
+        emitQueue();
+        maybeAutoStartQueue();
       }
       break;
     }

@@ -214,6 +214,19 @@ input:focus {
   z-index: 1;
 }
 .room-meta { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.host-label {
+  margin: 0;
+  padding: 6px 12px;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  color: #1a1a1a;
+  background: #fff;
+  border: 3px solid #1a1a1a;
+  border-radius: 14px;
+  box-shadow: 3px 3px 0 var(--crayon-blue);
+  text-shadow: 1px 1px 0 #fff;
+}
 
 .layout {
   display: grid;
