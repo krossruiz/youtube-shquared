@@ -460,7 +460,7 @@ input:focus {
 }
 .queue-list li {
   display: grid;
-  grid-template-columns: auto 1fr auto;
+  grid-template-columns: auto auto 1fr auto;
   gap: 10px;
   align-items: center;
   padding: 10px 12px;
@@ -619,7 +619,6 @@ input:focus {
   background: #ececec;
   opacity: 0.92;
 }
-.queue-list li.played .title { text-decoration: line-through; text-decoration-thickness: 2px; }
 .queue-list li.now {
   background: #fff7a8;
   box-shadow: 3px 3px 0 var(--crayon-orange);
@@ -642,3 +641,30 @@ input:focus {
 .queue-list li.played .badge { background: #cfcfcf; }
 .queue-list li.now .badge { background: var(--crayon-orange); color: #fff; }
 .queue-list li.upcoming .badge { background: var(--crayon-green); color: #08310f; }
+
+.queue-list li.played,
+.queue-list li.upcoming {
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+}
+.queue-list li.played:active,
+.queue-list li.upcoming:active { cursor: grabbing; }
+.queue-list li.dragging {
+  opacity: 0.55;
+  transform: scale(1.03) rotate(-0.5deg);
+}
+.queue-list li.drag-over {
+  outline: 3px dashed #1a1a1a;
+  outline-offset: -3px;
+}
+.queue-list .grip {
+  font-size: 1rem;
+  font-weight: 900;
+  letter-spacing: -1px;
+  color: #1a1a1a;
+  opacity: 0.55;
+  line-height: 1;
+  padding: 0 2px;
+}
+.queue-list li.now { cursor: default; }

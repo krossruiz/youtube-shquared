@@ -53,7 +53,8 @@ const state = {
   videoId: DEFAULT_VIDEO,
   videoTitle: 'Warm-up jam',
   queue: [], // [{ id, videoId, title, addedBy, addedByName }]
-  history: [], // [{ videoId, title }] previously played (for Last)
+  history: [], // [{ id?, videoId, title }] previously played (for Last)
+  drag: null, // { kind: 'played'|'upcoming', index }
   applyingRemote: false,
   hostTick: null,
   toastTimer: null,
@@ -147,6 +148,109 @@ function setNowPlayingLabel() {
   els.nowPlaying.textContent = `Now playing: ${title}`;
 }
 
+function listForKind(kind) {
+  return kind === 'played' ? state.history : state.queue;
+}
+
+function applyQueueOrder(history, queue, { emit = true } = {}) {
+  state.history = Array.isArray(history) ? history : state.history;
+  state.queue = Array.isArray(queue) ? queue : state.queue;
+  renderQueue();
+  if (emit) {
+    if (state.role === 'host') emitQueue();
+    else broadcast({ type: 'queue-reorder', history: state.history, queue: state.queue });
+  }
+}
+
+function moveQueueItem(fromKind, fromIndex, toKind, toIndex) {
+  if (fromKind !== 'played' && fromKind !== 'upcoming') return;
+  if (toKind !== 'played' && toKind !== 'upcoming') return;
+  const fromList = listForKind(fromKind);
+  if (fromIndex < 0 || fromIndex >= fromList.length) return;
+
+  let insertAt = toIndex;
+  if (insertAt < 0) insertAt = 0;
+
+  const nextHistory = state.history.slice();
+  const nextQueue = state.queue.slice();
+  const src = fromKind === 'played' ? nextHistory : nextQueue;
+  const dst = toKind === 'played' ? nextHistory : nextQueue;
+
+  if (fromKind === toKind) {
+    if (insertAt > fromIndex) insertAt -= 1;
+    if (insertAt === fromIndex) return;
+    const [item] = src.splice(fromIndex, 1);
+    src.splice(Math.max(0, Math.min(insertAt, src.length)), 0, item);
+  } else {
+    const [item] = src.splice(fromIndex, 1);
+    // Moving into upcoming from history — ensure queue-shaped fields
+    const normalized = fromKind === 'played' && toKind === 'upcoming'
+      ? {
+          id: item.id || `h2q-${Date.now().toString(36)}`,
+          videoId: item.videoId,
+          title: item.title || item.videoId,
+          addedBy: item.addedBy || state.peer?.id || null,
+          addedByName: item.addedByName || state.name || 'Someone',
+        }
+      : {
+          id: item.id || `q2h-${Date.now().toString(36)}`,
+          videoId: item.videoId,
+          title: item.title || item.videoId,
+        };
+    dst.splice(Math.max(0, Math.min(insertAt, dst.length)), 0, normalized);
+  }
+
+  applyQueueOrder(nextHistory, nextQueue, { emit: true });
+}
+
+function wireQueueDrag(li, kind, index) {
+  li.draggable = true;
+  li.dataset.kind = kind;
+  li.dataset.index = String(index);
+
+  li.addEventListener('dragstart', (e) => {
+    if (e.target.closest && e.target.closest('button')) {
+      e.preventDefault();
+      return;
+    }
+    state.drag = { kind, index };
+    li.classList.add('dragging');
+    try {
+      e.dataTransfer.effectAllowed = 'move';
+      e.dataTransfer.setData('text/plain', `${kind}:${index}`);
+    } catch { /* ignore */ }
+  });
+
+  li.addEventListener('dragend', () => {
+    state.drag = null;
+    li.classList.remove('dragging');
+    els.queueList?.querySelectorAll('.drag-over').forEach((n) => n.classList.remove('drag-over'));
+  });
+
+  li.addEventListener('dragover', (e) => {
+    if (!state.drag) return;
+    e.preventDefault();
+    try { e.dataTransfer.dropEffect = 'move'; } catch { /* ignore */ }
+    li.classList.add('drag-over');
+  });
+
+  li.addEventListener('dragleave', () => {
+    li.classList.remove('drag-over');
+  });
+
+  li.addEventListener('drop', (e) => {
+    e.preventDefault();
+    li.classList.remove('drag-over');
+    if (!state.drag) return;
+    const rect = li.getBoundingClientRect();
+    const after = e.clientY > rect.top + rect.height / 2;
+    let toIndex = index + (after ? 1 : 0);
+    const { kind: fromKind, index: fromIndex } = state.drag;
+    state.drag = null;
+    moveQueueItem(fromKind, fromIndex, kind, toIndex);
+  });
+}
+
 function renderQueue() {
   if (!els.queueList) return;
   els.queueList.innerHTML = '';
@@ -157,18 +261,20 @@ function renderQueue() {
   if (els.queueEmpty) els.queueEmpty.classList.toggle('hidden', !empty);
 
   // Oldest played first, then now, then upcoming — full session timeline
-  for (const item of state.history) {
+  state.history.forEach((item, index) => {
     const li = document.createElement('li');
     li.className = 'played';
     li.innerHTML = `
+      <span class="grip" aria-hidden="true">⋮⋮</span>
       <span class="badge">Played</span>
       <div class="meta">
         <span class="title" title="${escapeHtml(item.title || item.videoId)}">${escapeHtml(item.title || item.videoId)}</span>
-        <span class="by">earlier in the room</span>
+        <span class="by">earlier in the room · drag to reorder</span>
       </div>
     `;
+    wireQueueDrag(li, 'played', index);
     els.queueList.appendChild(li);
-  }
+  });
 
   if (hasNow) {
     const li = document.createElement('li');
@@ -180,18 +286,35 @@ function renderQueue() {
         <span class="by">playing now</span>
       </div>
     `;
+    // Allow dropping onto Now to insert at start of upcoming (below now)
+    li.addEventListener('dragover', (e) => {
+      if (!state.drag) return;
+      e.preventDefault();
+      li.classList.add('drag-over');
+    });
+    li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
+    li.addEventListener('drop', (e) => {
+      e.preventDefault();
+      li.classList.remove('drag-over');
+      if (!state.drag) return;
+      const { kind: fromKind, index: fromIndex } = state.drag;
+      state.drag = null;
+      // Drop on Now → place at front of upcoming
+      moveQueueItem(fromKind, fromIndex, 'upcoming', 0);
+    });
     els.queueList.appendChild(li);
   }
 
-  for (const item of state.queue) {
+  state.queue.forEach((item, index) => {
     const li = document.createElement('li');
     li.className = 'upcoming';
     const canRemove = state.role === 'host' || item.addedBy === state.peer?.id;
     li.innerHTML = `
+      <span class="grip" aria-hidden="true">⋮⋮</span>
       <span class="badge">Next</span>
       <div class="meta">
         <span class="title" title="${escapeHtml(item.title)}">${escapeHtml(item.title)}</span>
-        <span class="by">added by ${escapeHtml(item.addedByName || 'Someone')}</span>
+        <span class="by">added by ${escapeHtml(item.addedByName || 'Someone')} · drag to reorder</span>
       </div>
       <button type="button" class="btn rm" data-qid="${escapeHtml(item.id)}" ${canRemove ? '' : 'disabled'}>✕</button>
     `;
@@ -199,8 +322,10 @@ function renderQueue() {
     if (canRemove) {
       btn.addEventListener('click', () => removeFromQueue(item.id));
     }
+    btn?.addEventListener('mousedown', (e) => e.stopPropagation());
+    wireQueueDrag(li, 'upcoming', index);
     els.queueList.appendChild(li);
-  }
+  });
 
   setNowPlayingLabel();
   syncTransportUI();
@@ -850,6 +975,12 @@ function handleMessage(fromId, raw) {
           removeFromQueueLocal(msg.id);
           emitQueue();
         }
+      }
+      break;
+    }
+    case 'queue-reorder': {
+      if (state.role === 'host') {
+        applyQueueOrder(msg.history, msg.queue, { emit: true });
       }
       break;
     }
