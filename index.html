@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="Watch YouTube together in sync over WebRTC." />
+  <title>YouTube Shquared — watch together</title>
+  <link rel="stylesheet" href="styles.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+</head>
+<body>
+  <div id="app">
+    <header class="top">
+      <div class="brand">
+        <span class="logo" aria-hidden="true">▶▶</span>
+        <div>
+          <h1>YouTube Shquared</h1>
+          <p class="tagline">Watch YouTube together — synced over WebRTC</p>
+        </div>
+      </div>
+      <div id="status-pill" class="pill">Idle</div>
+    </header>
+
+    <section id="lobby" class="panel">
+      <label class="field">
+        <span>Your name</span>
+        <input id="name-input" type="text" maxlength="24" placeholder="Guest" autocomplete="nickname" />
+      </label>
+      <div class="lobby-actions">
+        <button id="create-btn" class="btn primary" type="button">Create room</button>
+        <div class="join-row">
+          <input id="room-input" type="text" placeholder="Room code" autocomplete="off" spellcheck="false" />
+          <button id="join-btn" class="btn" type="button">Join</button>
+        </div>
+      </div>
+      <p class="hint">Host controls the video. Guests stay locked in sync via peer-to-peer data channels.</p>
+    </section>
+
+    <section id="room" class="panel hidden">
+      <div class="room-bar">
+        <div class="room-meta">
+          <span class="label">Room</span>
+          <code id="room-code"></code>
+          <button id="copy-link-btn" class="btn ghost" type="button">Copy link</button>
+        </div>
+        <button id="leave-btn" class="btn danger" type="button">Leave</button>
+      </div>
+
+      <div class="layout">
+        <div class="player-col">
+          <div id="player-wrap">
+            <div id="yt-player"></div>
+          </div>
+          <div id="host-controls" class="controls hidden">
+            <input id="video-input" type="url" placeholder="Paste YouTube URL or video ID" />
+            <button id="load-btn" class="btn primary" type="button">Load</button>
+            <button id="play-btn" class="btn" type="button">Play</button>
+            <button id="pause-btn" class="btn" type="button">Pause</button>
+          </div>
+          <p id="guest-note" class="hint hidden">You’re a guest — playback follows the host.</p>
+        </div>
+
+        <aside class="side">
+          <div class="side-block">
+            <h2>People</h2>
+            <ul id="peer-list"></ul>
+          </div>
+          <div class="side-block chat-block">
+            <h2>Chat</h2>
+            <div id="chat-log" aria-live="polite"></div>
+            <form id="chat-form" class="chat-form">
+              <input id="chat-input" type="text" maxlength="400" placeholder="Say something…" autocomplete="off" />
+              <button class="btn primary" type="submit">Send</button>
+            </form>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <div id="toast" class="toast hidden" role="status"></div>
+  </div>
+
+  <script src="https://www.youtube.com/iframe_api"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "youtube-shquared",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Watch YouTube together in sync over WebRTC (PeerJS data channels).",
+  "scripts": {
+    "start": "npx --yes serve . -p 4173"
+  }
+}
