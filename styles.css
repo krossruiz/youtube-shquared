@@ -686,3 +686,28 @@ input:focus {
 .queue-list li.played {
   grid-template-columns: auto 1fr auto;
 }
+
+/* Session action log export */
+.session-log-export {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+.export-log-btn {
+  width: 100%;
+  background: #e8f7ff;
+  color: #0a4a6e;
+  font-size: 0.92rem;
+  padding: 10px 12px;
+  border-radius: 16px;
+  box-shadow: 3px 3px 0 var(--crayon-blue);
+}
+.export-log-btn:hover {
+  background: #d6f0ff;
+}
+.session-log-hint {
+  margin: 0;
+  font-size: 0.78rem;
+  line-height: 1.35;
+  opacity: 0.85;
+}

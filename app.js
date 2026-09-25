@@ -40,6 +40,7 @@ const els = {
   chatInput: document.getElementById('chat-input'),
   toast: document.getElementById('toast'),
   hostLabel: document.getElementById('host-label'),
+  exportLog: document.getElementById('export-log-btn'),
 };
 
 const state = {
@@ -64,6 +65,8 @@ const state = {
   acceptingConnections: false,
   recoveringHost: false,
   recoverTimer: null,
+  sessionLog: [], // ring buffer of structured session events
+  lastPlaybackLog: { type: null, at: 0 },
 };
 
 function randomName() {
@@ -82,6 +85,98 @@ function toast(msg, ms = 2800) {
   clearTimeout(state.toastTimer);
   state.toastTimer = setTimeout(() => els.toast.classList.add('hidden'), ms);
 }
+
+
+const SESSION_LOG_MAX = 2000;
+const PLAYBACK_LOG_DEBOUNCE_MS = 300;
+
+function clearSessionLog() {
+  state.sessionLog = [];
+  state.lastPlaybackLog = { type: null, at: 0 };
+}
+
+/** Record a structured room action. Host optionally syncs to guests via session-log. */
+function logSession(type, detail = {}, opts = {}) {
+  if (!type) return;
+  const entry = {
+    at: Date.now(),
+    type: String(type),
+    by: opts.by != null ? opts.by : state.name,
+    peerId: opts.peerId !== undefined ? opts.peerId : (state.peer?.id || null),
+    detail: detail && typeof detail === 'object' ? detail : {},
+  };
+  state.sessionLog.push(entry);
+  if (state.sessionLog.length > SESSION_LOG_MAX) {
+    state.sessionLog.splice(0, state.sessionLog.length - SESSION_LOG_MAX);
+  }
+  const shouldSync = opts.sync !== false && state.role === 'host';
+  if (shouldSync) {
+    broadcast({ type: 'session-log', event: entry });
+  }
+  return entry;
+}
+
+function ingestSessionLogEvent(event) {
+  if (!event || !event.type) return;
+  // Own actions are already logged locally
+  if (event.peerId && state.peer?.id && event.peerId === state.peer.id) return;
+  const dup = state.sessionLog.some(
+    (e) => e.at === event.at && e.type === event.type && e.peerId === event.peerId
+  );
+  if (dup) return;
+  state.sessionLog.push({
+    at: event.at || Date.now(),
+    type: String(event.type),
+    by: event.by || 'Someone',
+    peerId: event.peerId || null,
+    detail: event.detail && typeof event.detail === 'object' ? event.detail : {},
+  });
+  if (state.sessionLog.length > SESSION_LOG_MAX) {
+    state.sessionLog.splice(0, state.sessionLog.length - SESSION_LOG_MAX);
+  }
+}
+
+function logPlaybackTransition(ytState) {
+  if (state.role !== 'host' || state.applyingRemote) return;
+  let type = null;
+  if (ytState === YT.PlayerState.PLAYING) type = 'play';
+  else if (ytState === YT.PlayerState.PAUSED) type = 'pause';
+  else return;
+  const now = Date.now();
+  if (
+    state.lastPlaybackLog.type === type
+    && now - state.lastPlaybackLog.at < PLAYBACK_LOG_DEBOUNCE_MS
+  ) {
+    return;
+  }
+  state.lastPlaybackLog = { type, at: now };
+  logSession(type, { videoId: state.videoId, title: state.videoTitle });
+}
+
+function exportSessionLog() {
+  const roomId = state.hostId || state.peer?.id || 'unknown';
+  const payload = {
+    app: 'youtube-shquared',
+    exportedAt: new Date().toISOString(),
+    roomId,
+    exporter: state.role || 'unknown',
+    name: state.name || '',
+    events: state.sessionLog.slice(),
+  };
+  const iso = new Date().toISOString().replace(/[:.]/g, '-');
+  const filename = `youtube-shquared-session-${roomId}-${iso}.json`;
+  const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  toast('Session log downloaded');
+}
+
 
 function extractVideoId(input) {
   if (!input) return null;
@@ -249,18 +344,27 @@ function nudgeQueueItem(kind, index, dir) {
   if (item?.id) state.selectedQueue = { kind, id: item.id };
 
   const target = index + dir;
+  let moved = false;
   if (target >= 0 && target < list.length) {
     // Same list: moveQueueItem insertAt uses pre-splice index; down needs +2
     const toIndex = dir > 0 ? index + 2 : index - 1;
     moveQueueItem(kind, index, kind, toIndex);
-    return;
-  }
-  if (kind === 'upcoming' && dir === -1 && index === 0) {
+    moved = true;
+  } else if (kind === 'upcoming' && dir === -1 && index === 0) {
     moveQueueItem('upcoming', 0, 'played', state.history.length);
-    return;
-  }
-  if (kind === 'played' && dir === 1 && index === list.length - 1) {
+    moved = true;
+  } else if (kind === 'played' && dir === 1 && index === list.length - 1) {
     moveQueueItem('played', index, 'upcoming', 0);
+    moved = true;
+  }
+  if (moved) {
+    logSession('queue-reorder', {
+      kind,
+      index,
+      dir: dir < 0 ? 'up' : 'down',
+      title: item?.title || item?.videoId || null,
+      videoId: item?.videoId || null,
+    });
   }
 }
 
@@ -393,11 +497,23 @@ function removeFromQueueLocal(qid) {
 
 function removeFromQueue(qid) {
   if (!qid) return;
+  const item = state.queue.find((q) => q.id === qid);
   if (state.role === 'host') {
     removeFromQueueLocal(qid);
     emitQueue();
+    logSession('queue-remove', {
+      id: qid,
+      title: item?.title || null,
+      videoId: item?.videoId || null,
+    });
   } else {
     broadcast({ type: 'queue-remove', id: qid, peerId: state.peer?.id });
+    logSession('queue-remove', {
+      id: qid,
+      title: item?.title || null,
+      videoId: item?.videoId || null,
+      requested: true,
+    }, { sync: false });
   }
 }
 
@@ -421,11 +537,24 @@ async function requestAddToQueue(raw) {
   if (state.role === 'host') {
     addToQueueLocal(item);
     emitQueue();
+    logSession('queue-add', {
+      id: item.id,
+      videoId: item.videoId,
+      title: item.title,
+      duplicate: !!alreadyQueued,
+    });
     toast(alreadyQueued ? `Queued again: ${title}` : `Queued: ${title}`);
     // If nothing meaningful is playing / ended, start it
     maybeAutoStartQueue();
   } else {
     broadcast({ type: 'queue-add', item });
+    logSession('queue-add', {
+      id: item.id,
+      videoId: item.videoId,
+      title: item.title,
+      duplicate: !!alreadyQueued,
+      requested: true,
+    }, { sync: false });
     toast(alreadyQueued ? `Requested again: ${title}` : `Requested: ${title}`);
   }
   if (els.queueInput) els.queueInput.value = '';
@@ -458,10 +587,21 @@ async function requestAddPlaylistToQueue(playlistId) {
     for (const item of items) state.queue.push(item);
     renderQueue();
     emitQueue();
+    logSession('queue-add-playlist', {
+      count: items.length,
+      playlistTitle: plTitle,
+      playlistId,
+    });
     toast(`Queued ${items.length} from ${plTitle}`);
     maybeAutoStartQueue();
   } else {
-    broadcast({ type: 'queue-add-many', items });
+    broadcast({ type: 'queue-add-many', items, playlistTitle: plTitle });
+    logSession('queue-add-playlist', {
+      count: items.length,
+      playlistTitle: plTitle,
+      playlistId,
+      requested: true,
+    }, { sync: false });
     toast(`Requested ${items.length} from ${plTitle}`);
   }
   if (els.queueInput) els.queueInput.value = '';
@@ -533,7 +673,7 @@ function playVideoNow(videoId, title, { pushHistory = true } = {}) {
   setTimeout(() => { state.advancing = false; syncTransportUI(); }, 2000);
 }
 
-function playNextFromQueue() {
+function playNextFromQueue({ auto = false } = {}) {
   if (state.role !== 'host' || state.advancing) return;
   if (!state.queue.length) {
     toast('Queue is empty');
@@ -541,6 +681,11 @@ function playNextFromQueue() {
     return;
   }
   const next = state.queue.shift();
+  logSession('next', {
+    videoId: next.videoId,
+    title: next.title || next.videoId,
+    auto: !!auto,
+  });
   playVideoNow(next.videoId, next.title || next.videoId, { pushHistory: true });
 }
 
@@ -557,6 +702,10 @@ function playPreviousFromHistory() {
     state.queue.unshift(current);
   }
   const prev = state.history.pop();
+  logSession('last', {
+    videoId: prev.videoId,
+    title: prev.title,
+  });
   playVideoNow(prev.videoId, prev.title, { pushHistory: false });
 }
 
@@ -580,6 +729,7 @@ async function jumpToPastedVideo(raw) {
     return;
   }
   const title = await fetchVideoTitle(id);
+  logSession('go', { videoId: id, title });
   playVideoNow(id, title, { pushHistory: true });
   if (els.videoInput) els.videoInput.value = '';
 }
@@ -601,10 +751,15 @@ function syncPassHostUI() {
 }
 
 function setPassHostOnLeave(on, { emit = true } = {}) {
-  state.passHostOnLeave = !!on;
+  const next = !!on;
+  const changed = next !== !!state.passHostOnLeave;
+  state.passHostOnLeave = next;
   syncPassHostUI();
   if (state.role === 'host') saveHostSession();
   if (emit && state.role === 'host') emitSettings();
+  if (changed && state.role === 'host' && emit) {
+    logSession('settings', { passHostOnLeave: next });
+  }
 }
 
 function candidateIdsExcluding(deadHostId) {
@@ -656,6 +811,7 @@ function becomeHost() {
   setStatus(state.connections.size ? `Host · ${state.connections.size} linked` : 'Host · waiting for reconnects', 'ok');
   saveHostSession();
   toast('You’re the new host — share the updated link');
+  logSession('become-host', { previousHost: previousHost || null });
   // Push authoritative playback + queue as people reconnect (also on hello)
   emitState();
   emitQueue();
@@ -761,6 +917,7 @@ function transferHostThenLeave() {
     return;
   }
   broadcast({ type: 'host-pass', newHostId: elected, passHostOnLeave: state.passHostOnLeave });
+  logSession('host-pass', { newHostId: elected }, { sync: false });
   setStatus('Passing host…', 'warn');
   toast('Passing host to a guest…');
   setTimeout(() => destroySession(), 450);
@@ -768,6 +925,7 @@ function transferHostThenLeave() {
 
 function leaveRoom() {
   // Intentional leave — don't reclaim this room on refresh
+  logSession('room-leave', { role: state.role, roomId: state.hostId || state.peer?.id }, { sync: false });
   clearHostSession();
   if (state.role === 'host' && state.passHostOnLeave && state.connections.size > 0) {
     transferHostThenLeave();
@@ -856,13 +1014,20 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function addChat(name, text, peerId) {
+function addChat(name, text, peerId, { log = true } = {}) {
   const line = document.createElement('div');
   line.className = 'chat-line';
   if (peerId) line.dataset.peerId = peerId;
   line.innerHTML = `<span class="who">${escapeHtml(name)}</span><span>${escapeHtml(text)}</span>`;
   els.chatLog.appendChild(line);
   els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  if (log && text) {
+    logSession('chat', { text }, {
+      by: name,
+      peerId: peerId || null,
+      sync: false,
+    });
+  }
 }
 
 function rewriteChatNames(peerId, newName) {
@@ -902,6 +1067,7 @@ function renameSelf(rawName) {
   const oldName = state.name;
   applyRename(state.peer.id, name);
   broadcast({ type: 'rename', peerId: state.peer.id, name, oldName });
+  logSession('rename', { oldName, name }, { sync: false });
   toast(`Renamed to ${name}`);
 }
 
@@ -931,12 +1097,15 @@ function ensurePlayer(videoId, onReady) {
       },
       onStateChange: (e) => {
         syncTransportUI();
+        if (state.role === 'host' && !state.applyingRemote) {
+          logPlaybackTransition(e.data);
+        }
         if (state.role !== 'host' || state.applyingRemote) return;
         if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.BUFFERING) {
           emitState();
         }
         if (e.data === YT.PlayerState.ENDED) {
-          playNextFromQueue();
+          playNextFromQueue({ auto: true });
         }
       },
     },
@@ -996,6 +1165,11 @@ function handleMessage(fromId, raw) {
         sendTo(conn, queuePayload());
         sendTo(conn, settingsPayload());
         broadcast({ type: 'peer-join', id: fromId, name: msg.name, role: msg.role }, fromId);
+        logSession('room-join', {
+          role: msg.role || 'guest',
+          name: msg.name || 'Guest',
+          roomId: state.hostId,
+        }, { by: msg.name || 'Guest', peerId: fromId, sync: false });
       }
       break;
     }
@@ -1012,13 +1186,24 @@ function handleMessage(fromId, raw) {
       if (msg.id && msg.id !== state.peer?.id) {
         state.peers.set(msg.id, { name: msg.name || 'Guest', role: msg.role || 'guest' });
         renderPeers();
+        logSession('room-join', {
+          role: msg.role || 'guest',
+          name: msg.name || 'Guest',
+          roomId: state.hostId,
+        }, { by: msg.name || 'Guest', peerId: msg.id, sync: false });
       }
       break;
     }
     case 'peer-leave': {
       if (msg.id) {
+        const left = state.peers.get(msg.id);
         state.peers.delete(msg.id);
         renderPeers();
+        logSession('room-leave', {
+          role: left?.role || 'guest',
+          name: left?.name || 'Guest',
+          roomId: state.hostId,
+        }, { by: left?.name || 'Guest', peerId: msg.id, sync: false });
       }
       break;
     }
@@ -1043,6 +1228,17 @@ function handleMessage(fromId, raw) {
     case 'rename': {
       const pid = msg.peerId || fromId;
       applyRename(pid, msg.name);
+      // Self rename already logged in renameSelf; host syncs guest renames
+      if (pid !== state.peer?.id) {
+        logSession('rename', {
+          oldName: msg.oldName || null,
+          name: msg.name,
+        }, {
+          by: msg.name,
+          peerId: pid,
+          sync: false,
+        });
+      }
       if (state.role === 'host') {
         broadcast({ type: 'rename', peerId: pid, name: msg.name, oldName: msg.oldName }, fromId);
       }
@@ -1060,6 +1256,11 @@ function handleMessage(fromId, raw) {
         };
         addToQueueLocal(item);
         emitQueue();
+        logSession('queue-add', {
+          id: item.id,
+          videoId: item.videoId,
+          title: item.title,
+        }, { by: item.addedByName, peerId: item.addedBy });
         maybeAutoStartQueue();
       } else if (state.role !== 'host') {
         // Relayed copy for display if host echoed — ignore; wait for queue-sync
@@ -1069,6 +1270,7 @@ function handleMessage(fromId, raw) {
     case 'queue-add-many': {
       if (state.role === 'host' && Array.isArray(msg.items)) {
         const guestName = state.peers.get(fromId)?.name || 'Guest';
+        let added = 0;
         for (const raw of msg.items) {
           if (!raw || !raw.videoId) continue;
           const item = {
@@ -1079,9 +1281,16 @@ function handleMessage(fromId, raw) {
             addedByName: raw.addedByName || guestName,
           };
           state.queue.push(item);
+          added += 1;
         }
         renderQueue();
         emitQueue();
+        if (added) {
+          logSession('queue-add-playlist', {
+            count: added,
+            playlistTitle: msg.playlistTitle || null,
+          }, { by: guestName, peerId: fromId });
+        }
         maybeAutoStartQueue();
       }
       break;
@@ -1092,6 +1301,12 @@ function handleMessage(fromId, raw) {
         if (item && item.addedBy === fromId) {
           removeFromQueueLocal(msg.id);
           emitQueue();
+          const who = state.peers.get(fromId)?.name || item.addedByName || 'Guest';
+          logSession('queue-remove', {
+            id: msg.id,
+            title: item.title || null,
+            videoId: item.videoId || null,
+          }, { by: who, peerId: fromId });
         }
       }
       break;
@@ -1099,6 +1314,8 @@ function handleMessage(fromId, raw) {
     case 'queue-reorder': {
       if (state.role === 'host') {
         applyQueueOrder(msg.history, msg.queue, { emit: true });
+        const who = state.peers.get(fromId)?.name || 'Guest';
+        logSession('queue-reorder', { fromGuest: true }, { by: who, peerId: fromId });
       }
       break;
     }
@@ -1106,6 +1323,7 @@ function handleMessage(fromId, raw) {
       if (typeof msg.passHostOnLeave === 'boolean') {
         state.passHostOnLeave = msg.passHostOnLeave;
         syncPassHostUI();
+        // Host already broadcasts session-log for settings; guests ingest that.
       }
       break;
     }
@@ -1116,6 +1334,10 @@ function handleMessage(fromId, raw) {
         state.recoverTimer = null;
         state.recoveringHost = false;
         const oldHost = state.hostId || fromId;
+        logSession('host-pass', {
+          newHostId: msg.newHostId,
+          previousHost: oldHost,
+        }, { sync: false });
         handleHostPass(msg.newHostId, { reason: 'pass' });
         dropPeerFromRoster(oldHost);
       }
@@ -1127,6 +1349,10 @@ function handleMessage(fromId, raw) {
       if (state.role === 'guest' && (deadId === state.hostId || fromId === state.hostId)) {
         beginHostRecovery(deadId || state.hostId);
       }
+      break;
+    }
+    case 'session-log': {
+      if (msg.event) ingestSessionLogEvent(msg.event);
       break;
     }
     default:
@@ -1148,9 +1374,17 @@ function wireConnection(conn, remoteRoleHint = 'guest') {
   conn.on('close', () => {
     const wasHostConn = state.role === 'guest' && conn.peer === state.hostId;
     const deadId = conn.peer;
+    const left = state.peers.get(conn.peer);
     state.connections.delete(conn.peer);
     state.peers.delete(conn.peer);
-    if (state.role === 'host') broadcast({ type: 'peer-leave', id: conn.peer });
+    if (state.role === 'host') {
+      broadcast({ type: 'peer-leave', id: conn.peer });
+      logSession('room-leave', {
+        role: left?.role || 'guest',
+        name: left?.name || 'Guest',
+        roomId: state.hostId,
+      }, { by: left?.name || 'Guest', peerId: deadId, sync: false });
+    }
     renderPeers();
     if (wasHostConn) {
       beginHostRecovery(deadId);
@@ -1225,6 +1459,7 @@ function destroySession() {
   state.queue = [];
   state.history = [];
   state.videoTitle = 'Warm-up jam';
+  clearSessionLog();
   renderQueue();
   syncTransportUI();
   els.room.classList.add('hidden');
@@ -1289,6 +1524,7 @@ function createPeer(preferredId = null) {
 }
 
 async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created — share the link', quiet = false } = {}) {
+  clearSessionLog();
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
   if (!quiet) setStatus(preferredId ? 'Reclaiming host…' : 'Connecting…', 'warn');
@@ -1312,6 +1548,12 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
   setStatus('Host · waiting', 'ok');
   history.replaceState(null, '', roomUrl(id));
   saveHostSession();
+  logSession(preferredId ? 'room-join' : 'room-create', {
+    role: 'host',
+    name: state.name,
+    roomId: id,
+    reclaimed: !!preferredId,
+  }, { sync: false });
   if (toastMsg) toast(toastMsg);
 }
 
@@ -1332,6 +1574,7 @@ async function joinRoom(roomCode) {
     return;
   }
   clearHostSession();
+  clearSessionLog();
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
   setStatus('Connecting…', 'warn');
@@ -1359,6 +1602,11 @@ async function joinRoom(roomCode) {
     ensurePlayer(DEFAULT_VIDEO);
     history.replaceState(null, '', roomUrl(code));
     setStatus('Connecting to host…', 'warn');
+    logSession('room-join', {
+      role: 'guest',
+      name: state.name,
+      roomId: code,
+    }, { sync: false });
   } catch (err) {
     console.error(err);
     setStatus('Failed', 'err');
@@ -1399,6 +1647,7 @@ els.roomInput.addEventListener('keydown', (e) => {
   if (e.key === 'Enter') joinRoom(els.roomInput.value);
 });
 els.leave.addEventListener('click', () => leaveRoom());
+els.exportLog?.addEventListener('click', () => exportSessionLog());
 els.passHostToggle?.addEventListener('change', () => {
   if (state.role !== 'host') {
     syncPassHostUI();
