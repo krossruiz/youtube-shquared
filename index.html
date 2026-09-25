@@ -25,6 +25,10 @@
     </header>
 
     <section id="playback-bar" class="playback-bar panel hidden anim-pop" aria-label="Session playback">
+      <div class="playback-timeline">
+        <div id="replay-clock" class="replay-clock" aria-live="polite">0:00 / 0:00</div>
+        <ol id="replay-event-list" class="replay-event-list" aria-label="Playback events"></ol>
+      </div>
       <div class="playback-controls">
         <button id="replay-play-btn" class="btn primary" type="button">Play</button>
         <button id="replay-pause-btn" class="btn" type="button" disabled>Pause</button>

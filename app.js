@@ -56,6 +56,8 @@ const els = {
   replayExit: document.getElementById('replay-exit-btn'),
   replayStatus: document.getElementById('replay-status'),
   replayMeta: document.getElementById('replay-meta'),
+  replayEventList: document.getElementById('replay-event-list'),
+  replayClock: document.getElementById('replay-clock'),
 };
 
 const state = {
@@ -91,6 +93,7 @@ const state = {
     speed: 1,
     t0: 0,
     timer: null,
+    clockTimer: null,
     wallStart: 0,
     elapsedMs: 0,
     lobbyOnly: false,
@@ -276,12 +279,161 @@ function clearPreviousChat() {
   if (els.chatLogPrevious) els.chatLogPrevious.innerHTML = '';
 }
 
+function replayTotalMs() {
+  const r = state.replay;
+  if (!r.events.length) return 0;
+  if (r.events.length === 1) return 0;
+  return Math.max(0, (r.events[r.events.length - 1].at || 0) - (r.events[0].at || 0));
+}
+
+function updateReplayClock() {
+  if (!els.replayClock) return;
+  const r = state.replay;
+  if (!r.active || !r.events.length) {
+    els.replayClock.textContent = '0:00 / 0:00';
+    return;
+  }
+  const elapsed = Math.min(Math.max(0, replayElapsedMs()), replayTotalMs() || Infinity);
+  const total = replayTotalMs();
+  const shown = Number.isFinite(elapsed) ? elapsed : replayElapsedMs();
+  els.replayClock.textContent = `${formatReplayClock(shown)} / ${formatReplayClock(total)}`;
+}
+
+function startReplayClockTicker() {
+  stopReplayClockTicker();
+  state.replay.clockTimer = setInterval(() => {
+    if (!state.replay.playing) {
+      stopReplayClockTicker();
+      return;
+    }
+    updateReplayClock();
+  }, 200);
+}
+
+function stopReplayClockTicker() {
+  if (state.replay.clockTimer != null) {
+    clearInterval(state.replay.clockTimer);
+    state.replay.clockTimer = null;
+  }
+}
+
+function replayEventLabel(ev) {
+  if (!ev || !ev.type) return '(unknown)';
+  const detail = ev.detail && typeof ev.detail === 'object' ? ev.detail : {};
+  const by = ev.by || '';
+  const clip = (s, n = 48) => {
+    const t = String(s || '').trim();
+    if (!t) return '';
+    return t.length > n ? `${t.slice(0, n - 1)}…` : t;
+  };
+  switch (ev.type) {
+    case 'chat':
+      return `chat · ${clip(detail.text) || '(empty)'}`;
+    case 'queue-add':
+      return `queue-add · ${clip(detail.title || detail.videoId) || '?'}`;
+    case 'queue-add-playlist': {
+      const title = detail.playlistTitle || 'playlist';
+      const count = detail.count != null ? detail.count : (Array.isArray(detail.videos) ? detail.videos.length : '?');
+      return `queue-add-playlist · ${clip(title)} (${count})`;
+    }
+    case 'queue-remove':
+      return `queue-remove · ${clip(detail.title || detail.videoId || detail.id) || '?'}`;
+    case 'queue-reorder':
+      return 'queue-reorder';
+    case 'next':
+    case 'last':
+    case 'go':
+    case 'play':
+    case 'pause':
+      return `${ev.type} · ${clip(detail.title || detail.videoId) || (by || '—')}`;
+    case 'room-create':
+    case 'room-join':
+    case 'room-leave':
+    case 'become-host':
+    case 'host-pass':
+    case 'rename':
+    case 'settings':
+      return `${ev.type}${by ? ` · ${clip(by)}` : ''}${detail.name && detail.name !== by ? ` · ${clip(detail.name)}` : ''}`;
+    default:
+      return `${ev.type}${by ? ` · ${clip(by)}` : ''}`;
+  }
+}
+
+function renderReplayEventList() {
+  const list = els.replayEventList;
+  if (!list) return;
+  list.innerHTML = '';
+  const r = state.replay;
+  if (!r.active || !r.events.length) return;
+  r.events.forEach((ev, i) => {
+    const li = document.createElement('li');
+    li.dataset.index = String(i);
+    li.setAttribute('role', 'button');
+    li.tabIndex = 0;
+    const rel = formatReplayClock((ev.at || 0) - r.t0);
+    li.innerHTML = `<span class="ev-time">${escapeHtml(rel)}</span><span class="ev-label">${escapeHtml(replayEventLabel(ev))}</span>`;
+    li.addEventListener('click', () => seekReplayTo(i));
+    li.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        seekReplayTo(i);
+      }
+    });
+    list.appendChild(li);
+  });
+  highlightReplayEventList();
+}
+
+function highlightReplayEventList() {
+  const list = els.replayEventList;
+  if (!list) return;
+  const r = state.replay;
+  const items = list.querySelectorAll('li');
+  items.forEach((li) => {
+    const i = Number(li.dataset.index);
+    const played = r.index > i;
+    const active = r.index > 0 ? r.index - 1 === i : false;
+    // When paused after seek to index, last applied is index-1 → active
+    // Next upcoming (at r.index) gets a soft cue via not played
+    li.classList.toggle('played', played && !active);
+    li.classList.toggle('active', active);
+  });
+  const activeEl = list.querySelector('li.active');
+  if (activeEl) {
+    const listRect = list.getBoundingClientRect();
+    const rowRect = activeEl.getBoundingClientRect();
+    if (rowRect.top < listRect.top || rowRect.bottom > listRect.bottom) {
+      activeEl.scrollIntoView({ block: 'nearest' });
+    }
+  }
+}
+
+function seekReplayTo(index) {
+  const r = state.replay;
+  if (!r.active || !r.events.length) return;
+  const i = Math.max(0, Math.min(Number(index), r.events.length - 1));
+  if (!Number.isFinite(i)) return;
+  stopReplayTimers();
+  stopReplayClockTicker();
+  r.playing = false;
+  r.statusNote = '';
+  resetReplayMedia();
+  for (let j = 0; j <= i; j += 1) {
+    applyReplayEvent(r.events[j]);
+  }
+  r.index = i + 1;
+  r.elapsedMs = (r.events[i].at || 0) - r.t0;
+  updateReplayStatus();
+}
+
 function updateReplayStatus() {
   if (!els.replayStatus) return;
   const r = state.replay;
   if (!r.active || !r.events.length) {
     els.replayStatus.textContent = 'No session loaded';
     if (els.replayMeta) els.replayMeta.textContent = '';
+    updateReplayClock();
+    highlightReplayEventList();
     return;
   }
   const total = r.events.length;
@@ -302,6 +454,8 @@ function updateReplayStatus() {
   if (els.replayPlay) els.replayPlay.disabled = r.playing || r.index >= total;
   if (els.replayPause) els.replayPause.disabled = !r.playing;
   if (els.replaySkip) els.replaySkip.disabled = r.index >= total;
+  updateReplayClock();
+  highlightReplayEventList();
 }
 
 function stopReplayTimers() {
@@ -479,6 +633,7 @@ function scheduleNextReplayEvent() {
   if (r.index >= r.events.length) {
     r.playing = false;
     r.elapsedMs = replayElapsedMs();
+    stopReplayClockTicker();
     updateReplayStatus();
     toast('Replay finished');
     return;
@@ -504,6 +659,7 @@ function pauseReplay() {
   r.elapsedMs = replayElapsedMs();
   r.playing = false;
   stopReplayTimers();
+  stopReplayClockTicker();
   updateReplayStatus();
 }
 
@@ -518,6 +674,7 @@ function playReplay() {
   r.playing = true;
   r.wallStart = performance.now();
   updateReplayStatus();
+  startReplayClockTicker();
   scheduleNextReplayEvent();
 }
 
@@ -603,6 +760,7 @@ function leaveReplayViewer() {
 function exitReplay() {
   const lobbyOnly = state.replay.lobbyOnly;
   pauseReplay();
+  stopReplayClockTicker();
   state.replay.active = false;
   state.replay.events = [];
   state.replay.index = 0;
@@ -611,6 +769,7 @@ function exitReplay() {
   state.replay.statusNote = '';
   document.body.classList.remove('replay-active');
   if (els.playbackBar) els.playbackBar.classList.add('hidden');
+  if (els.replayEventList) els.replayEventList.innerHTML = '';
   clearPreviousChat();
   setChatTab('current');
   updateReplayStatus();
@@ -669,6 +828,7 @@ function loadSessionForPlayback(data) {
   }
 
   setChatTab('current');
+  renderReplayEventList();
   updateReplayStatus();
   toast(`Loaded ${events.length} events — press Play`);
 }
