@@ -292,10 +292,13 @@ function becomeHost() {
   clearTimeout(state.recoverTimer);
   state.recoverTimer = null;
   state.recoveringHost = false;
+  const previousHost = state.hostId;
   state.role = 'host';
   state.hostId = state.peer.id;
+  if (previousHost && previousHost !== state.peer.id) state.peers.delete(previousHost);
   // Demote everyone else in local roster
   for (const [id, info] of state.peers) {
+    if (id === state.peer.id) continue;
     state.peers.set(id, { ...info, role: 'guest' });
   }
   ensureAcceptingConnections();
@@ -316,6 +319,7 @@ function rejoinNewHost(newHostId) {
   clearTimeout(state.recoverTimer);
   state.recoverTimer = null;
   state.recoveringHost = false;
+  const previousHost = state.hostId;
   state.role = 'guest';
   state.hostId = newHostId;
 
@@ -324,11 +328,13 @@ function rejoinNewHost(newHostId) {
   }
   state.connections.clear();
 
-  // Refresh roles in roster
+  // Refresh roles in roster (never keep the departed host)
   const next = new Map();
   for (const [id, info] of state.peers) {
+    if (!id || id === state.peer.id) continue;
+    if (previousHost && id === previousHost && id !== newHostId) continue;
     if (id === newHostId) next.set(id, { ...info, role: 'host' });
-    else if (id !== state.peer.id) next.set(id, { ...info, role: 'guest' });
+    else next.set(id, { ...info, role: 'guest' });
   }
   if (!next.has(newHostId)) next.set(newHostId, { name: 'Host', role: 'host' });
   state.peers = next;
@@ -345,15 +351,30 @@ function rejoinNewHost(newHostId) {
 
 function handleHostPass(newHostId, { reason = 'pass' } = {}) {
   if (!newHostId || !state.peer?.id) return;
+  const oldHostId = state.hostId;
+  if (oldHostId && oldHostId !== newHostId && oldHostId !== state.peer.id) {
+    state.peers.delete(oldHostId);
+  }
   if (newHostId === state.peer.id) becomeHost();
   else rejoinNewHost(newHostId);
 }
 
+function dropPeerFromRoster(peerId) {
+  if (!peerId) return;
+  state.peers.delete(peerId);
+  state.connections.delete(peerId);
+  renderPeers();
+}
+
 function beginHostRecovery(deadHostId) {
   if (state.role !== 'guest') return;
+  // Always remove the departed host from People immediately.
+  dropPeerFromRoster(deadHostId);
+
   if (!state.passHostOnLeave) {
-    setStatus('Host disconnected', 'err');
-    toast('Host left the room');
+    setStatus('Host left', 'err');
+    toast('Host left — session ended');
+    destroySession();
     return;
   }
   if (state.recoveringHost) return;
@@ -365,6 +386,7 @@ function beginHostRecovery(deadHostId) {
     // Already took over / rejoined?
     if (state.role === 'host' || (state.hostId && state.hostId !== deadHostId && state.connections.size)) {
       state.recoveringHost = false;
+      dropPeerFromRoster(deadHostId);
       return;
     }
     const candidates = candidateIdsExcluding(deadHostId);
@@ -373,9 +395,11 @@ function beginHostRecovery(deadHostId) {
     if (!elected) {
       setStatus('Host disconnected', 'err');
       toast('Host left — nobody left to take over');
+      destroySession();
       return;
     }
     handleHostPass(elected, { reason: 'recover' });
+    dropPeerFromRoster(deadHostId);
   }, 500);
 }
 
@@ -396,9 +420,15 @@ function transferHostThenLeave() {
 function leaveRoom() {
   if (state.role === 'host' && state.passHostOnLeave && state.connections.size > 0) {
     transferHostThenLeave();
-  } else {
-    destroySession();
+    return;
   }
+  if (state.role === 'host' && state.connections.size > 0) {
+    broadcast({ type: 'host-gone', id: state.peer?.id });
+    setStatus('Leaving…', 'warn');
+    setTimeout(() => destroySession(), 250);
+    return;
+  }
+  destroySession();
 }
 
 function roomUrl(id) {
@@ -694,7 +724,17 @@ function handleMessage(fromId, raw) {
         clearTimeout(state.recoverTimer);
         state.recoverTimer = null;
         state.recoveringHost = false;
+        const oldHost = state.hostId || fromId;
         handleHostPass(msg.newHostId, { reason: 'pass' });
+        dropPeerFromRoster(oldHost);
+      }
+      break;
+    }
+    case 'host-gone': {
+      const deadId = msg.id || fromId;
+      dropPeerFromRoster(deadId);
+      if (state.role === 'guest' && (deadId === state.hostId || fromId === state.hostId)) {
+        beginHostRecovery(deadId || state.hostId);
       }
       break;
     }
@@ -718,12 +758,7 @@ function wireConnection(conn, remoteRoleHint = 'guest') {
     const wasHostConn = state.role === 'guest' && conn.peer === state.hostId;
     const deadId = conn.peer;
     state.connections.delete(conn.peer);
-    // Keep roster entry briefly during host recovery so election sees peers
-    if (!(wasHostConn && state.passHostOnLeave)) {
-      state.peers.delete(conn.peer);
-    } else {
-      state.peers.delete(conn.peer); // dead host out of candidates
-    }
+    state.peers.delete(conn.peer);
     if (state.role === 'host') broadcast({ type: 'peer-leave', id: conn.peer });
     renderPeers();
     if (wasHostConn) {
