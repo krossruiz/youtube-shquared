@@ -35,12 +35,26 @@ const els = {
   queueEmpty: document.getElementById('queue-empty'),
   nowPlaying: document.getElementById('now-playing'),
   peerList: document.getElementById('peer-list'),
-  chatLog: document.getElementById('chat-log'),
+  chatLogCurrent: document.getElementById('chat-log-current'),
+  chatLogPrevious: document.getElementById('chat-log-previous'),
+  chatTabPrevious: document.getElementById('chat-tab-previous'),
+  chatTabCurrent: document.getElementById('chat-tab-current'),
   chatForm: document.getElementById('chat-form'),
   chatInput: document.getElementById('chat-input'),
   toast: document.getElementById('toast'),
   hostLabel: document.getElementById('host-label'),
   exportLog: document.getElementById('export-log-btn'),
+  loadSessionLobby: document.getElementById('load-session-input-lobby'),
+  loadSessionRoom: document.getElementById('load-session-input-room'),
+  playbackBar: document.getElementById('playback-bar'),
+  replayPlay: document.getElementById('replay-play-btn'),
+  replayPause: document.getElementById('replay-pause-btn'),
+  replayRestart: document.getElementById('replay-restart-btn'),
+  replaySkip: document.getElementById('replay-skip-btn'),
+  replaySpeed: document.getElementById('replay-speed'),
+  replayExit: document.getElementById('replay-exit-btn'),
+  replayStatus: document.getElementById('replay-status'),
+  replayMeta: document.getElementById('replay-meta'),
 };
 
 const state = {
@@ -67,6 +81,21 @@ const state = {
   recoverTimer: null,
   sessionLog: [], // ring buffer of structured session events
   lastPlaybackLog: { type: null, at: 0 },
+  chatTab: 'current', // 'previous' | 'current'
+  replay: {
+    active: false,
+    events: [],
+    index: 0,
+    playing: false,
+    speed: 1,
+    t0: 0,
+    timer: null,
+    wallStart: 0,
+    elapsedMs: 0,
+    lobbyOnly: false,
+    meta: null,
+    statusNote: '',
+  },
 };
 
 function randomName() {
@@ -137,7 +166,7 @@ function ingestSessionLogEvent(event) {
 }
 
 function logPlaybackTransition(ytState) {
-  if (state.role !== 'host' || state.applyingRemote) return;
+  if (state.replay.active || state.role !== 'host' || state.applyingRemote) return;
   let type = null;
   if (ytState === YT.PlayerState.PLAYING) type = 'play';
   else if (ytState === YT.PlayerState.PAUSED) type = 'pause';
@@ -177,6 +206,460 @@ function exportSessionLog() {
   toast('Session log downloaded');
 }
 
+
+
+
+/* ── Session JSON playback (replay mode) ─────────────────────────── */
+
+function formatReplayClock(ms) {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const m = Math.floor(total / 60);
+  const s = total % 60;
+  return `${m}:${String(s).padStart(2, '0')}`;
+}
+
+function setChatTab(tab) {
+  const next = tab === 'previous' ? 'previous' : 'current';
+  state.chatTab = next;
+  const showPrev = next === 'previous';
+  if (els.chatLogPrevious) els.chatLogPrevious.classList.toggle('hidden', !showPrev);
+  if (els.chatLogCurrent) els.chatLogCurrent.classList.toggle('hidden', showPrev);
+  if (els.chatTabPrevious) {
+    els.chatTabPrevious.classList.toggle('active', showPrev);
+    els.chatTabPrevious.setAttribute('aria-selected', showPrev ? 'true' : 'false');
+  }
+  if (els.chatTabCurrent) {
+    els.chatTabCurrent.classList.toggle('active', !showPrev);
+    els.chatTabCurrent.setAttribute('aria-selected', showPrev ? 'false' : 'true');
+  }
+}
+
+function addPreviousChat(by, text) {
+  if (!els.chatLogPrevious) return;
+  const line = document.createElement('div');
+  line.className = 'chat-line';
+  line.innerHTML = `<span class="who">${escapeHtml(by || 'Someone')}</span><span>${escapeHtml(text || '')}</span>`;
+  els.chatLogPrevious.appendChild(line);
+  els.chatLogPrevious.scrollTop = els.chatLogPrevious.scrollHeight;
+  setChatTab('previous');
+}
+
+function clearPreviousChat() {
+  if (els.chatLogPrevious) els.chatLogPrevious.innerHTML = '';
+}
+
+function updateReplayStatus() {
+  if (!els.replayStatus) return;
+  const r = state.replay;
+  if (!r.active || !r.events.length) {
+    els.replayStatus.textContent = 'No session loaded';
+    if (els.replayMeta) els.replayMeta.textContent = '';
+    return;
+  }
+  const total = r.events.length;
+  const idx = Math.min(r.index, total);
+  const cur = r.index > 0 ? r.events[r.index - 1] : null;
+  const type = cur ? cur.type : '(start)';
+  const rel = cur ? formatReplayClock(cur.at - r.t0) : '0:00';
+  const note = r.statusNote ? ` · ${r.statusNote}` : '';
+  const playLabel = r.playing ? 'Playing' : 'Paused';
+  els.replayStatus.textContent = `${playLabel} · ${idx}/${total} · ${type} @ ${rel}${note}`;
+  if (els.replayMeta && r.meta) {
+    const bits = [];
+    if (r.meta.name) bits.push(r.meta.name);
+    if (r.meta.roomId) bits.push(`room ${String(r.meta.roomId).slice(0, 8)}…`);
+    if (r.meta.exportedAt) bits.push(`exported ${r.meta.exportedAt}`);
+    els.replayMeta.textContent = bits.join(' · ');
+  }
+  if (els.replayPlay) els.replayPlay.disabled = r.playing || r.index >= total;
+  if (els.replayPause) els.replayPause.disabled = !r.playing;
+  if (els.replaySkip) els.replaySkip.disabled = r.index >= total;
+}
+
+function stopReplayTimers() {
+  if (state.replay.timer != null) {
+    clearTimeout(state.replay.timer);
+    state.replay.timer = null;
+  }
+}
+
+function replayElapsedMs() {
+  const r = state.replay;
+  if (!r.playing) return r.elapsedMs;
+  return r.elapsedMs + (performance.now() - r.wallStart) * r.speed;
+}
+
+function applyReplayVideo(videoId, title, { pushHistory = true } = {}) {
+  if (!videoId) return;
+  if (pushHistory && state.videoId && state.videoId !== videoId) pushHistoryCurrent();
+  state.videoId = videoId;
+  state.videoTitle = title || videoId;
+  setNowPlayingLabel();
+  renderQueue();
+  ensurePlayer(videoId, () => {
+    try {
+      state.player.seekTo(0, true);
+      state.player.playVideo();
+    } catch { /* ignore */ }
+    syncTransportUI();
+  });
+}
+
+function applyReplayEvent(ev) {
+  if (!ev || !ev.type) return;
+  const detail = ev.detail && typeof ev.detail === 'object' ? ev.detail : {};
+  const by = ev.by || 'Someone';
+  state.replay.statusNote = '';
+
+  switch (ev.type) {
+    case 'queue-add': {
+      const ytId = detail.videoId;
+      if (!ytId) {
+        state.replay.statusNote = 'queue-add missing videoId';
+        break;
+      }
+      const item = {
+        id: detail.id || makeQueueItem(ytId).id,
+        videoId: ytId,
+        title: detail.title || ytId,
+        addedBy: ev.peerId || null,
+        addedByName: by,
+      };
+      state.queue.push(item);
+      renderQueue();
+      break;
+    }
+    case 'queue-add-playlist': {
+      if (Array.isArray(detail.videos) && detail.videos.length) {
+        for (const v of detail.videos) {
+          if (!v || !v.videoId) continue;
+          state.queue.push(makeQueueItem(v.videoId, v.title || v.videoId, ev.peerId, by));
+        }
+        renderQueue();
+      } else {
+        const count = detail.count != null ? detail.count : '?';
+        const title = detail.playlistTitle || 'playlist';
+        state.replay.statusNote = `playlist skipped (${count} from ${title})`;
+        toast(`Replay: playlist videos not in log — skipped ${title}`);
+      }
+      break;
+    }
+    case 'queue-remove': {
+      if (detail.id) {
+        state.queue = state.queue.filter((q) => q.id !== detail.id);
+        renderQueue();
+      } else if (detail.videoId) {
+        const idx = state.queue.findIndex((q) => q.videoId === detail.videoId);
+        if (idx >= 0) {
+          state.queue.splice(idx, 1);
+          renderQueue();
+        }
+      }
+      break;
+    }
+    case 'queue-reorder': {
+      if (Array.isArray(detail.history) || Array.isArray(detail.queue)) {
+        applyQueueOrder(detail.history || state.history, detail.queue || state.queue, { emit: false });
+      } else {
+        state.replay.statusNote = 'queue-reorder skipped (no order payload)';
+      }
+      break;
+    }
+    case 'next': {
+      const vid = detail.videoId;
+      if (vid) {
+        const idx = state.queue.findIndex((q) => q.videoId === vid);
+        if (idx >= 0) state.queue.splice(idx, 1);
+        else if (state.queue.length) state.queue.shift();
+      } else if (state.queue.length) {
+        state.queue.shift();
+      }
+      if (vid) applyReplayVideo(vid, detail.title || vid, { pushHistory: true });
+      else renderQueue();
+      break;
+    }
+    case 'last': {
+      if (state.videoId) {
+        const current = makeQueueItem(state.videoId, state.videoTitle, ev.peerId, by);
+        state.queue.unshift(current);
+      }
+      if (state.history.length) state.history.pop();
+      if (detail.videoId) {
+        applyReplayVideo(detail.videoId, detail.title || detail.videoId, { pushHistory: false });
+      } else {
+        renderQueue();
+      }
+      break;
+    }
+    case 'go': {
+      if (detail.videoId) {
+        applyReplayVideo(detail.videoId, detail.title || detail.videoId, { pushHistory: true });
+      }
+      break;
+    }
+    case 'play': {
+      if (detail.videoId && detail.videoId !== state.videoId) {
+        applyReplayVideo(detail.videoId, detail.title || detail.videoId, { pushHistory: false });
+      } else if (state.player) {
+        try { state.player.playVideo(); } catch { /* ignore */ }
+        syncTransportUI();
+      }
+      break;
+    }
+    case 'pause': {
+      if (state.player) {
+        try { state.player.pauseVideo(); } catch { /* ignore */ }
+        syncTransportUI();
+      }
+      break;
+    }
+    case 'chat': {
+      addPreviousChat(by, detail.text || '');
+      break;
+    }
+    case 'rename':
+    case 'room-create':
+    case 'room-join':
+    case 'become-host':
+    case 'host-pass':
+    case 'settings':
+    case 'room-leave': {
+      const bits = [ev.type];
+      if (by) bits.push(`by ${by}`);
+      if (detail.name) bits.push(detail.name);
+      if (detail.role) bits.push(`(${detail.role})`);
+      if (typeof detail.passHostOnLeave === 'boolean') {
+        bits.push(`passHost=${detail.passHostOnLeave}`);
+      }
+      if (detail.newHostId) bits.push(`→ ${String(detail.newHostId).slice(0, 8)}`);
+      state.replay.statusNote = bits.join(' ');
+      if (ev.type === 'become-host' || ev.type === 'host-pass' || ev.type === 'room-create') {
+        if (els.hostLabel && by) els.hostLabel.textContent = `Host: ${by} (replay)`;
+      }
+      break;
+    }
+    default:
+      state.replay.statusNote = `ignored ${ev.type}`;
+      break;
+  }
+}
+
+function scheduleNextReplayEvent() {
+  stopReplayTimers();
+  const r = state.replay;
+  if (!r.active || !r.playing) return;
+  if (r.index >= r.events.length) {
+    r.playing = false;
+    r.elapsedMs = replayElapsedMs();
+    updateReplayStatus();
+    toast('Replay finished');
+    return;
+  }
+  const ev = r.events[r.index];
+  const targetTimeline = ev.at - r.t0;
+  const currentTimeline = r.elapsedMs + (performance.now() - r.wallStart) * r.speed;
+  const waitWall = Math.max(0, (targetTimeline - currentTimeline) / r.speed);
+  r.timer = setTimeout(() => {
+    r.timer = null;
+    r.elapsedMs = targetTimeline;
+    r.wallStart = performance.now();
+    r.index += 1;
+    applyReplayEvent(ev);
+    updateReplayStatus();
+    scheduleNextReplayEvent();
+  }, waitWall);
+}
+
+function pauseReplay() {
+  const r = state.replay;
+  if (!r.active || !r.playing) return;
+  r.elapsedMs = replayElapsedMs();
+  r.playing = false;
+  stopReplayTimers();
+  updateReplayStatus();
+}
+
+function playReplay() {
+  const r = state.replay;
+  if (!r.active || !r.events.length) return;
+  if (r.index >= r.events.length) {
+    restartReplay({ autoplay: true });
+    return;
+  }
+  if (r.playing) return;
+  r.playing = true;
+  r.wallStart = performance.now();
+  updateReplayStatus();
+  scheduleNextReplayEvent();
+}
+
+function skipReplayEvent() {
+  const r = state.replay;
+  if (!r.active || r.index >= r.events.length) return;
+  const wasPlaying = r.playing;
+  pauseReplay();
+  const ev = r.events[r.index];
+  r.index += 1;
+  r.elapsedMs = ev.at - r.t0;
+  applyReplayEvent(ev);
+  updateReplayStatus();
+  if (wasPlaying) playReplay();
+}
+
+function resetReplayMedia() {
+  state.queue = [];
+  state.history = [];
+  state.selectedQueue = null;
+  state.videoId = DEFAULT_VIDEO;
+  state.videoTitle = 'Warm-up jam';
+  state.advancing = false;
+  clearPreviousChat();
+  setNowPlayingLabel();
+  renderQueue();
+  syncTransportUI();
+  if (state.player) {
+    try { state.player.pauseVideo(); } catch { /* ignore */ }
+  }
+}
+
+function restartReplay({ autoplay = false } = {}) {
+  const r = state.replay;
+  if (!r.active || !r.events.length) return;
+  pauseReplay();
+  r.index = 0;
+  r.elapsedMs = 0;
+  r.statusNote = '';
+  resetReplayMedia();
+  updateReplayStatus();
+  if (autoplay) playReplay();
+}
+
+function enterReplayViewer() {
+  // Show room UI without PeerJS for lobby-only replay
+  els.lobby.classList.add('hidden');
+  els.room.classList.remove('hidden');
+  if (els.hostControls) els.hostControls.classList.add('hidden');
+  if (els.guestNote) {
+    els.guestNote.classList.remove('hidden');
+    els.guestNote.textContent = 'Replay mode — watching a recorded session (no live peers).';
+  }
+  if (els.roomName) els.roomName.value = state.name || (els.name?.value || '');
+  renderPeers();
+  renderQueue();
+  syncTransportUI();
+  if (!state.player) ensurePlayer(DEFAULT_VIDEO);
+}
+
+function leaveReplayViewer() {
+  if (state.player) {
+    try { state.player.destroy(); } catch { /* ignore */ }
+    state.player = null;
+    state.ytReady = false;
+    const mount = document.getElementById('yt-player');
+    if (mount) mount.innerHTML = '';
+  }
+  state.queue = [];
+  state.history = [];
+  state.videoId = DEFAULT_VIDEO;
+  state.videoTitle = 'Warm-up jam';
+  if (els.chatLogPrevious) els.chatLogPrevious.innerHTML = '';
+  if (els.guestNote) {
+    els.guestNote.textContent = 'You’re a guest — playback follows the host. Anyone can add to the queue!';
+  }
+  els.room.classList.add('hidden');
+  els.lobby.classList.remove('hidden');
+  setStatus('Idle');
+  renderQueue();
+}
+
+function exitReplay() {
+  const lobbyOnly = state.replay.lobbyOnly;
+  pauseReplay();
+  state.replay.active = false;
+  state.replay.events = [];
+  state.replay.index = 0;
+  state.replay.meta = null;
+  state.replay.lobbyOnly = false;
+  state.replay.statusNote = '';
+  document.body.classList.remove('replay-active');
+  if (els.playbackBar) els.playbackBar.classList.add('hidden');
+  clearPreviousChat();
+  setChatTab('current');
+  updateReplayStatus();
+  if (lobbyOnly && !state.role) {
+    leaveReplayViewer();
+  } else if (state.role === 'guest' && state.hostId) {
+    // Refresh live state from host after leaving replay overlay
+    for (const conn of state.connections.values()) {
+      sendTo(conn, { type: 'request-state' });
+      break;
+    }
+  } else if (state.role) {
+    showRoom();
+  }
+  toast('Exited replay');
+}
+
+function loadSessionForPlayback(data) {
+  if (!data || data.app !== 'youtube-shquared') {
+    toast('Not a youtube-shquared session file');
+    return;
+  }
+  const events = Array.isArray(data.events) ? data.events.slice() : [];
+  events.sort((a, b) => (a.at || 0) - (b.at || 0));
+  if (!events.length) {
+    toast('Session has no events');
+    return;
+  }
+
+  pauseReplay();
+  const lobbyOnly = !state.role;
+  state.replay.active = true;
+  state.replay.lobbyOnly = lobbyOnly;
+  state.replay.events = events;
+  state.replay.index = 0;
+  state.replay.elapsedMs = 0;
+  state.replay.speed = Number(els.replaySpeed?.value) || 1;
+  state.replay.t0 = events[0].at || 0;
+  state.replay.meta = {
+    name: data.name || '',
+    roomId: data.roomId || '',
+    exportedAt: data.exportedAt || '',
+    exporter: data.exporter || '',
+  };
+  state.replay.statusNote = '';
+  document.body.classList.add('replay-active');
+  if (els.playbackBar) els.playbackBar.classList.remove('hidden');
+
+  resetReplayMedia();
+  if (lobbyOnly) enterReplayViewer();
+  else {
+    // Keep live Current chat; just reset local player/queue for replay overlay
+    if (els.hostLabel && data.name) {
+      els.hostLabel.textContent = `Host: ${data.name} (replay)`;
+    }
+  }
+
+  setChatTab('previous');
+  updateReplayStatus();
+  toast(`Loaded ${events.length} events — press Play`);
+}
+
+function onSessionFileSelected(file) {
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const data = JSON.parse(String(reader.result || ''));
+      loadSessionForPlayback(data);
+    } catch (err) {
+      console.warn(err);
+      toast('Could not parse session JSON');
+    }
+  };
+  reader.onerror = () => toast('Could not read file');
+  reader.readAsText(file);
+}
 
 function extractVideoId(input) {
   if (!input) return null;
@@ -478,6 +961,7 @@ function renderQueue() {
 }
 
 function applyQueueSync(msg) {
+  if (state.replay.active) return;
   state.queue = Array.isArray(msg.queue) ? msg.queue : [];
   state.history = Array.isArray(msg.history) ? msg.history : [];
   if (msg.videoTitle) state.videoTitle = msg.videoTitle;
@@ -518,6 +1002,7 @@ function removeFromQueue(qid) {
 }
 
 async function requestAddToQueue(raw) {
+  if (state.replay.active) { toast('Pause or exit replay to edit the queue'); return; }
   const playlistId = extractPlaylistId(raw);
   if (playlistId) {
     await requestAddPlaylistToQueue(playlistId);
@@ -651,6 +1136,7 @@ function syncTransportUI() {
 }
 
 function playVideoNow(videoId, title, { pushHistory = true } = {}) {
+  if (state.replay.active) { toast('Pause or exit replay to control live playback'); return; }
   if (state.role !== 'host' || !videoId || state.advancing) return;
   if (pushHistory && state.videoId && state.videoId !== videoId) pushHistoryCurrent();
   state.advancing = true;
@@ -674,6 +1160,7 @@ function playVideoNow(videoId, title, { pushHistory = true } = {}) {
 }
 
 function playNextFromQueue({ auto = false } = {}) {
+  if (state.replay.active) return;
   if (state.role !== 'host' || state.advancing) return;
   if (!state.queue.length) {
     toast('Queue is empty');
@@ -690,6 +1177,7 @@ function playNextFromQueue({ auto = false } = {}) {
 }
 
 function playPreviousFromHistory() {
+  if (state.replay.active) { toast('Pause or exit replay to control live playback'); return; }
   if (state.role !== 'host' || state.advancing) return;
   if (!state.history.length) {
     toast('No earlier video');
@@ -710,6 +1198,7 @@ function playPreviousFromHistory() {
 }
 
 function togglePlayPause() {
+  if (state.replay.active) { toast('Pause or exit replay to control live playback'); return; }
   if (state.role !== 'host' || !state.player) return;
   try {
     const st = state.player.getPlayerState();
@@ -722,6 +1211,7 @@ function togglePlayPause() {
 }
 
 async function jumpToPastedVideo(raw) {
+  if (state.replay.active) { toast('Pause or exit replay to control live playback'); return; }
   if (state.role !== 'host') return;
   const id = extractVideoId(raw);
   if (!id) {
@@ -974,7 +1464,7 @@ function currentPlayback() {
 }
 
 function emitState() {
-  if (state.role !== 'host') return;
+  if (state.replay.active || state.role !== 'host') return;
   broadcast({ type: 'state', ...currentPlayback() });
 }
 
@@ -1019,8 +1509,8 @@ function addChat(name, text, peerId, { log = true } = {}) {
   line.className = 'chat-line';
   if (peerId) line.dataset.peerId = peerId;
   line.innerHTML = `<span class="who">${escapeHtml(name)}</span><span>${escapeHtml(text)}</span>`;
-  els.chatLog.appendChild(line);
-  els.chatLog.scrollTop = els.chatLog.scrollHeight;
+  els.chatLogCurrent.appendChild(line);
+  els.chatLogCurrent.scrollTop = els.chatLogCurrent.scrollHeight;
   if (log && text) {
     logSession('chat', { text }, {
       by: name,
@@ -1032,7 +1522,7 @@ function addChat(name, text, peerId, { log = true } = {}) {
 
 function rewriteChatNames(peerId, newName) {
   if (!peerId) return;
-  const lines = els.chatLog.querySelectorAll(`.chat-line[data-peer-id="${CSS.escape(peerId)}"] .who`);
+  const lines = els.chatLogCurrent.querySelectorAll(`.chat-line[data-peer-id="${CSS.escape(peerId)}"] .who`);
   for (const who of lines) who.textContent = newName;
 }
 
@@ -1097,14 +1587,15 @@ function ensurePlayer(videoId, onReady) {
       },
       onStateChange: (e) => {
         syncTransportUI();
-        if (state.role === 'host' && !state.applyingRemote) {
+        if (state.role === 'host' && !state.applyingRemote && !state.replay.active) {
           logPlaybackTransition(e.data);
         }
-        if (state.role !== 'host' || state.applyingRemote) return;
+        if (state.replay.active || state.role !== 'host' || state.applyingRemote) return;
         if (e.data === YT.PlayerState.PLAYING || e.data === YT.PlayerState.PAUSED || e.data === YT.PlayerState.BUFFERING) {
           emitState();
         }
         if (e.data === YT.PlayerState.ENDED) {
+          if (state.replay.active) return;
           playNextFromQueue({ auto: true });
         }
       },
@@ -1113,7 +1604,7 @@ function ensurePlayer(videoId, onReady) {
 }
 
 function applyRemoteState(msg) {
-  if (state.role === 'host') return;
+  if (state.replay.active || state.role === 'host') return;
   const { videoId, playing, time, updatedAt } = msg;
   const age = Math.max(0, (Date.now() - (updatedAt || Date.now())) / 1000);
   const target = (time || 0) + (playing ? age : 0);
@@ -1429,6 +1920,14 @@ function showRoom() {
 }
 
 function destroySession() {
+  stopReplayTimers();
+  state.replay.active = false;
+  state.replay.lobbyOnly = false;
+  state.replay.events = [];
+  state.replay.index = 0;
+  state.replay.meta = null;
+  document.body.classList.remove('replay-active');
+  if (els.playbackBar) els.playbackBar.classList.add('hidden');
   clearInterval(state.hostTick);
   state.hostTick = null;
   for (const conn of state.connections.values()) {
@@ -1455,7 +1954,8 @@ function destroySession() {
     const mount = document.getElementById('yt-player');
     if (mount) mount.innerHTML = '';
   }
-  els.chatLog.innerHTML = '';
+  if (els.chatLogCurrent) els.chatLogCurrent.innerHTML = '';
+  if (els.chatLogPrevious) els.chatLogPrevious.innerHTML = '';
   state.queue = [];
   state.history = [];
   state.videoTitle = 'Warm-up jam';
@@ -1648,6 +2148,30 @@ els.roomInput.addEventListener('keydown', (e) => {
 });
 els.leave.addEventListener('click', () => leaveRoom());
 els.exportLog?.addEventListener('click', () => exportSessionLog());
+els.loadSessionLobby?.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  onSessionFileSelected(file);
+  e.target.value = '';
+});
+els.loadSessionRoom?.addEventListener('change', (e) => {
+  const file = e.target.files && e.target.files[0];
+  onSessionFileSelected(file);
+  e.target.value = '';
+});
+els.replayPlay?.addEventListener('click', () => playReplay());
+els.replayPause?.addEventListener('click', () => pauseReplay());
+els.replayRestart?.addEventListener('click', () => restartReplay({ autoplay: false }));
+els.replaySkip?.addEventListener('click', () => skipReplayEvent());
+els.replayExit?.addEventListener('click', () => exitReplay());
+els.replaySpeed?.addEventListener('change', () => {
+  const wasPlaying = state.replay.playing;
+  if (wasPlaying) pauseReplay();
+  state.replay.speed = Number(els.replaySpeed.value) || 1;
+  updateReplayStatus();
+  if (wasPlaying) playReplay();
+});
+els.chatTabPrevious?.addEventListener('click', () => setChatTab('previous'));
+els.chatTabCurrent?.addEventListener('click', () => setChatTab('current'));
 els.passHostToggle?.addEventListener('change', () => {
   if (state.role !== 'host') {
     syncPassHostUI();

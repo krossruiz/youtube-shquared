@@ -375,7 +375,9 @@ input:focus {
 }
 
 .chat-block { flex: 1; display: flex; flex-direction: column; min-height: 260px; }
-#chat-log {
+.chat-log,
+#chat-log-previous,
+#chat-log-current {
   flex: 1;
   overflow: auto;
   display: flex;
@@ -388,6 +390,30 @@ input:focus {
   border-radius: 14px;
   padding: 10px;
 }
+.chat-log.hidden { display: none !important; }
+
+.chat-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.chat-tab {
+  flex: 1;
+  border: var(--fat-border);
+  border-radius: 14px;
+  background: #fff;
+  padding: 8px 10px;
+  font-weight: 800;
+  cursor: pointer;
+  box-shadow: 2px 2px 0 #1a1a1a;
+}
+.chat-tab.active {
+  background: var(--crayon-yellow);
+  box-shadow: 3px 3px 0 var(--crayon-orange);
+}
+.chat-tab:hover { background: #fff6c2; }
+.chat-tab.active:hover { background: var(--crayon-yellow); }
+
 .chat-line { font-size: 0.95rem; line-height: 1.35; font-weight: 500; }
 .chat-line .who {
   color: var(--crayon-red);
@@ -710,4 +736,66 @@ input:focus {
   font-size: 0.78rem;
   line-height: 1.35;
   opacity: 0.85;
+}
+
+/* Session load + playback bar */
+.session-load,
+.lobby-session-load {
+  margin-top: 12px;
+  display: grid;
+  gap: 6px;
+}
+.load-session-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  cursor: pointer;
+  text-align: center;
+  background: #fff0f8;
+  color: #6b0a45;
+  box-shadow: 3px 3px 0 var(--crayon-pink);
+}
+.load-session-btn:hover { background: #ffe0f0; }
+
+.playback-bar {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  background: #fffbe8;
+  border: var(--fat-border);
+  border-radius: 22px;
+  box-shadow: var(--stamp-shadow), 0 0 0 5px var(--crayon-purple);
+}
+.playback-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.playback-controls .btn { padding: 8px 12px; font-size: 0.92rem; }
+.playback-speed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+.playback-speed select {
+  border: 3px solid #1a1a1a;
+  border-radius: 10px;
+  padding: 6px 8px;
+  background: #fff;
+  font-weight: 700;
+}
+.playback-status {
+  margin: 10px 0 0;
+  font-weight: 800;
+  font-size: 0.95rem;
+  color: var(--crayon-purple);
+}
+.playback-meta {
+  margin: 4px 0 0;
+}
+body.replay-active #guest-note:not(.hidden) {
+  border-color: var(--crayon-purple);
 }

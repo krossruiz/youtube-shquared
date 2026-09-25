@@ -1,0 +1,63 @@
+{
+  "app": "youtube-shquared",
+  "exportedAt": "2026-09-25T16:27:55.505Z",
+  "roomId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+  "exporter": "host",
+  "name": "LogTester",
+  "events": [
+    {
+      "at": 1790353636090,
+      "type": "room-create",
+      "by": "LogTester",
+      "peerId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+      "detail": {
+        "role": "host",
+        "name": "LogTester",
+        "roomId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+        "reclaimed": false
+      }
+    },
+    {
+      "at": 1790353644350,
+      "type": "queue-add",
+      "by": "LogTester",
+      "peerId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+      "detail": {
+        "id": "muh6c18e-us19zj",
+        "videoId": "jNQXAC9IVRw",
+        "title": "Me at the zoo",
+        "duplicate": false
+      }
+    },
+    {
+      "at": 1790353656388,
+      "type": "next",
+      "by": "LogTester",
+      "peerId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+      "detail": {
+        "videoId": "jNQXAC9IVRw",
+        "title": "Me at the zoo",
+        "auto": false
+      }
+    },
+    {
+      "at": 1790353657069,
+      "type": "play",
+      "by": "LogTester",
+      "peerId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+      "detail": {
+        "videoId": "jNQXAC9IVRw",
+        "title": "Me at the zoo"
+      }
+    },
+    {
+      "at": 1790353671273,
+      "type": "chat",
+      "by": "LogTester",
+      "peerId": "cfd02939-93fa-48a5-9ee6-104981a1be8f",
+      "detail": {
+        "text": "hello log"
+      }
+    }
+  ]
+}

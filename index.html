@@ -24,6 +24,26 @@
       <div id="status-pill" class="pill">Idle</div>
     </header>
 
+    <section id="playback-bar" class="playback-bar panel hidden anim-pop" aria-label="Session playback">
+      <div class="playback-controls">
+        <button id="replay-play-btn" class="btn primary" type="button">Play</button>
+        <button id="replay-pause-btn" class="btn" type="button" disabled>Pause</button>
+        <button id="replay-restart-btn" class="btn" type="button">Restart</button>
+        <button id="replay-skip-btn" class="btn" type="button">Skip</button>
+        <label class="playback-speed">
+          <span>Speed</span>
+          <select id="replay-speed">
+            <option value="1" selected>1x</option>
+            <option value="2">2x</option>
+            <option value="4">4x</option>
+          </select>
+        </label>
+        <button id="replay-exit-btn" class="btn danger" type="button">Exit replay</button>
+      </div>
+      <p id="replay-status" class="playback-status">No session loaded</p>
+      <p id="replay-meta" class="playback-meta hint"></p>
+    </section>
+
     <section id="lobby" class="panel anim-pop">
       <label class="field">
         <span>Your name</span>
@@ -40,6 +60,10 @@
         <input id="pass-host-create" type="checkbox" checked />
         <span>If the host leaves, pass hosting to a random guest</span>
       </label>
+      <div class="session-load lobby-session-load">
+        <label class="btn ghost load-session-btn" for="load-session-input-lobby">Load session for playback</label>
+        <input id="load-session-input-lobby" class="sr-only" type="file" accept="application/json,.json" />
+      </div>
       <p class="hint">Host controls the video. Guests stay locked in sync via peer-to-peer data channels.</p>
     </section>
 
@@ -116,12 +140,19 @@
             <ul id="peer-list"></ul>
             <div class="session-log-export">
               <button id="export-log-btn" class="btn ghost export-log-btn" type="button">Export session log</button>
-              <p class="hint session-log-hint">Action history for this visit — not a video.</p>
+              <label class="btn ghost load-session-btn export-log-btn" for="load-session-input-room">Load session for playback</label>
+              <input id="load-session-input-room" class="sr-only" type="file" accept="application/json,.json" />
+              <p class="hint session-log-hint">Action history for this visit — not a video. Load an export to replay.</p>
             </div>
           </div>
           <div class="side-block chat-block">
             <h2>Chat</h2>
-            <div id="chat-log" aria-live="polite"></div>
+            <div class="chat-tabs" role="tablist" aria-label="Chat views">
+              <button type="button" class="chat-tab" id="chat-tab-previous" data-chat-tab="previous" role="tab" aria-selected="false">Previous</button>
+              <button type="button" class="chat-tab active" id="chat-tab-current" data-chat-tab="current" role="tab" aria-selected="true">Current</button>
+            </div>
+            <div id="chat-log-previous" class="chat-log hidden" role="tabpanel" aria-labelledby="chat-tab-previous" aria-live="polite"></div>
+            <div id="chat-log-current" class="chat-log" role="tabpanel" aria-labelledby="chat-tab-current" aria-live="polite"></div>
             <form id="chat-form" class="chat-form">
               <input id="chat-input" type="text" maxlength="400" placeholder="Say something…" autocomplete="off" />
               <button class="btn primary" type="submit">Send</button>
