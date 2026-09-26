@@ -6,6 +6,7 @@ const DEFAULT_VIDEO = 'dQw4w9WgXcQ';
 const HOST_SESSION_KEY = 'ys-host-session';
 const HOST_RECOVER_MS = 2500; // give refreshing hosts time to reclaim their Peer id
 const HOWTO_DISMISS_KEY = 'ys-howto-dismissed';
+const PERSIST_ROOMS_KEY = 'ys-persist-rooms-v1';
 const DIR_HEARTBEAT_MS = 8000;
 const DIR_STALE_MS = 28000;
 const DIR_PRUNE_MS = 5000;
@@ -22,7 +23,12 @@ const els = {
   join: document.getElementById('join-btn'),
   roomInput: document.getElementById('room-input'),
   passHostCreate: document.getElementById('pass-host-create'),
+  persistEmptyCreate: document.getElementById('persist-empty-create'),
+  recordSessionCreate: document.getElementById('record-session-create'),
   passHostToggle: document.getElementById('pass-host-toggle'),
+  recordingModal: document.getElementById('recording-modal'),
+  recordingModalOk: document.getElementById('recording-modal-ok'),
+  sessionLogExport: document.getElementById('session-log-export'),
   copyLink: document.getElementById('copy-link-btn'),
   leave: document.getElementById('leave-btn'),
   renameForm: document.getElementById('rename-form'),
@@ -112,6 +118,11 @@ const state = {
   toastTimer: null,
   advancing: false,
   passHostOnLeave: true,
+  persistWhenEmpty: false,
+  recordingEnabled: true,
+  recordingNoticeAcked: false,
+  recordingSettingsReady: false,
+  parked: false,
   acceptingConnections: false,
   recoveringHost: false,
   recoverTimer: null,
@@ -167,6 +178,7 @@ function clearSessionLog() {
 /** Record a structured room action. Host optionally syncs to guests via session-log. */
 function logSession(type, detail = {}, opts = {}) {
   if (!type) return;
+  if (!state.recordingEnabled) return null;
   const entry = {
     at: Date.now(),
     type: String(type),
@@ -187,6 +199,7 @@ function logSession(type, detail = {}, opts = {}) {
 
 function ingestSessionLogEvent(event) {
   if (!event || !event.type) return;
+  if (!state.recordingEnabled) return;
   // Own actions are already logged locally
   if (event.peerId && state.peer?.id && event.peerId === state.peer.id) return;
   const dup = state.sessionLog.some(
@@ -240,6 +253,10 @@ function logPlaybackRateChange(rate) {
 }
 
 function exportSessionLog() {
+  if (!state.recordingEnabled) {
+    toast('Recording is off for this room — nothing to export');
+    return;
+  }
   const roomId = state.hostId || state.peer?.id || 'unknown';
   const payload = {
     app: 'youtube-shquared',
@@ -1242,7 +1259,10 @@ function queuePayload() {
 }
 
 function emitQueue() {
-  if (state.role === 'host') broadcast(queuePayload());
+  if (state.role === 'host') {
+    broadcast(queuePayload());
+    if (state.persistWhenEmpty) saveHostSession();
+  }
 }
 
 function setNowPlayingLabel() {
@@ -1732,6 +1752,8 @@ function settingsPayload() {
   return {
     type: 'settings',
     passHostOnLeave: !!state.passHostOnLeave,
+    persistWhenEmpty: !!state.persistWhenEmpty,
+    recordingEnabled: !!state.recordingEnabled,
     sessionName: state.sessionName || defaultSessionName(),
   };
 }
@@ -1913,10 +1935,20 @@ function transferHostThenLeave() {
   const candidates = [...state.connections.keys()];
   const elected = electHostId(candidates, deadHostId);
   if (!elected) {
+    if (state.persistWhenEmpty) {
+      parkSession();
+      return;
+    }
     destroySession();
     return;
   }
-  broadcast({ type: 'host-pass', newHostId: elected, passHostOnLeave: state.passHostOnLeave });
+  broadcast({
+    type: 'host-pass',
+    newHostId: elected,
+    passHostOnLeave: state.passHostOnLeave,
+    persistWhenEmpty: state.persistWhenEmpty,
+    recordingEnabled: state.recordingEnabled,
+  });
   logSession('host-pass', { newHostId: elected }, { sync: false });
   setStatus('Passing host…', 'warn');
   toast('Passing host to a guest…');
@@ -1924,8 +1956,13 @@ function transferHostThenLeave() {
 }
 
 function leaveRoom() {
-  // Intentional leave — don't reclaim this room on refresh
   logSession('room-leave', { role: state.role, roomId: state.hostId || state.peer?.id }, { sync: false });
+  // Empty host leave with "keep open" — park peer + queue, stay discoverable
+  if (state.role === 'host' && state.persistWhenEmpty && state.connections.size === 0) {
+    parkSession();
+    return;
+  }
+  // Intentional leave — don't reclaim this room on refresh (unless parked above)
   clearHostSession();
   if (state.role === 'host' && state.passHostOnLeave && state.connections.size > 0) {
     transferHostThenLeave();
@@ -2366,6 +2403,12 @@ function handleMessage(fromId, raw) {
         syncPassHostUI();
         // Host already broadcasts session-log for settings; guests ingest that.
       }
+      if (typeof msg.persistWhenEmpty === 'boolean') {
+        state.persistWhenEmpty = msg.persistWhenEmpty;
+      }
+      if (typeof msg.recordingEnabled === 'boolean') {
+        applyRecordingEnabled(msg.recordingEnabled, { fromRemote: true });
+      }
       if (typeof msg.sessionName === 'string' && msg.sessionName.trim()) {
         state.sessionName = msg.sessionName.trim().slice(0, 40);
         updateSessionTitle();
@@ -2375,6 +2418,10 @@ function handleMessage(fromId, raw) {
     case 'host-pass': {
       if (msg.newHostId) {
         if (typeof msg.passHostOnLeave === 'boolean') state.passHostOnLeave = msg.passHostOnLeave;
+        if (typeof msg.persistWhenEmpty === 'boolean') state.persistWhenEmpty = msg.persistWhenEmpty;
+        if (typeof msg.recordingEnabled === 'boolean') {
+          applyRecordingEnabled(msg.recordingEnabled, { fromRemote: true });
+        }
         clearTimeout(state.recoverTimer);
         state.recoverTimer = null;
         state.recoveringHost = false;
@@ -2408,6 +2455,9 @@ function handleMessage(fromId, raw) {
 function wireConnection(conn, remoteRoleHint = 'guest') {
   conn.on('open', () => {
     state.connections.set(conn.peer, conn);
+    if (state.role === 'host' && state.parked) {
+      unparkSession({ toastMsg: 'Someone hopped in — room resumed!' });
+    }
     sendTo(conn, { type: 'hello', role: state.role, peerId: state.peer.id, name: state.name });
     if (state.role === 'guest') sendTo(conn, { type: 'request-state' });
     renderPeers();
@@ -2543,6 +2593,82 @@ function wireMobileTabs() {
   panels.addEventListener('touchcancel', () => { tracking = false; }, { passive: true });
 }
 
+function syncRecordingUI() {
+  const on = !!state.recordingEnabled;
+  document.body.classList.toggle('recording-off', !on);
+  if (els.sessionLogExport) {
+    els.sessionLogExport.classList.toggle('hidden', !on);
+    els.sessionLogExport.hidden = !on;
+    // Keep load-for-playback available only when recording is on (exportable log)
+    const loadLabel = els.sessionLogExport.querySelector('label.load-session-btn, label[for="load-session-input-room"]');
+    const loadInput = els.loadSessionRoom;
+    if (loadLabel) loadLabel.classList.toggle('hidden', !on);
+    if (loadInput) loadInput.disabled = !on;
+  }
+  if (els.exportLog) {
+    els.exportLog.disabled = !on;
+    els.exportLog.title = on
+      ? 'Download this visit’s action log'
+      : 'Recording is off for this room';
+  }
+}
+
+function applyRecordingEnabled(on, { fromRemote = false } = {}) {
+  const next = !!on;
+  const changed = next !== !!state.recordingEnabled;
+  state.recordingEnabled = next;
+  state.recordingSettingsReady = true;
+  if (!next) {
+    clearSessionLog();
+    hideRecordingNotice();
+  }
+  syncRecordingUI();
+  if (next && (state.role === 'host' || state.role === 'guest') && !state.parked) {
+    // Entering / learning recording is on — require ack unless already dismissed this visit
+    if (changed || fromRemote) state.recordingNoticeAcked = false;
+    maybeShowRecordingNotice();
+  }
+  if (!fromRemote && state.role === 'host') {
+    saveHostSession();
+    emitSettings();
+  }
+}
+
+function showRecordingNotice() {
+  const modal = els.recordingModal;
+  if (!modal) return;
+  modal.classList.remove('hidden');
+  modal.hidden = false;
+  document.body.classList.add('modal-open');
+  // Prefer focusing the dismiss button for a11y
+  setTimeout(() => els.recordingModalOk?.focus(), 30);
+}
+
+function hideRecordingNotice() {
+  const modal = els.recordingModal;
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.hidden = true;
+  document.body.classList.remove('modal-open');
+}
+
+function ackRecordingNotice() {
+  state.recordingNoticeAcked = true;
+  hideRecordingNotice();
+}
+
+function maybeShowRecordingNotice() {
+  if (!state.recordingEnabled) {
+    hideRecordingNotice();
+    return;
+  }
+  if (!state.recordingSettingsReady) return;
+  if (state.parked) return;
+  if (state.role !== 'host' && state.role !== 'guest') return;
+  if (state.recordingNoticeAcked) return;
+  showRecordingNotice();
+}
+
 function showRoom() {
   els.lobby.classList.add('hidden');
   els.room.classList.remove('hidden');
@@ -2556,13 +2682,144 @@ function showRoom() {
   syncTransportUI();
   updateSessionTitle();
   syncHowtoBanner();
+  syncRecordingUI();
   renderPeers();
   renderQueue();
+  maybeShowRecordingNotice();
+}
+
+function readPersistRoomsStore() {
+  try {
+    const raw = localStorage.getItem(PERSIST_ROOMS_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function writePersistRoomsStore(map) {
+  try {
+    localStorage.setItem(PERSIST_ROOMS_KEY, JSON.stringify(map));
+  } catch { /* ignore quota */ }
+}
+
+function snapshotPersistableMedia() {
+  return {
+    queue: (state.queue || []).map((q) => ({
+      id: q.id,
+      videoId: q.videoId,
+      title: q.title,
+      addedBy: q.addedBy || null,
+      addedByName: q.addedByName || null,
+    })),
+    history: (state.history || []).map((h) => ({
+      id: h.id,
+      videoId: h.videoId,
+      title: h.title,
+    })),
+    videoId: state.videoId || DEFAULT_VIDEO,
+    videoTitle: state.videoTitle || 'Warm-up jam',
+  };
+}
+
+function applyPersistedMedia(snap) {
+  if (!snap || typeof snap !== 'object') return;
+  if (Array.isArray(snap.queue)) state.queue = snap.queue.slice();
+  if (Array.isArray(snap.history)) state.history = snap.history.slice();
+  if (typeof snap.videoId === 'string' && snap.videoId) state.videoId = snap.videoId;
+  if (typeof snap.videoTitle === 'string' && snap.videoTitle) state.videoTitle = snap.videoTitle;
+  renderQueue();
+  syncTransportUI();
+}
+
+function savePersistedRoom(roomId = null) {
+  const id = roomId || state.hostId || state.peer?.id;
+  if (!id || !state.persistWhenEmpty) return;
+  const store = readPersistRoomsStore();
+  store[id] = {
+    roomId: id,
+    sessionName: state.sessionName || defaultSessionName(),
+    name: state.name || '',
+    passHostOnLeave: !!state.passHostOnLeave,
+    persistWhenEmpty: true,
+    ...snapshotPersistableMedia(),
+    savedAt: Date.now(),
+  };
+  writePersistRoomsStore(store);
+}
+
+function loadPersistedRoom(roomId) {
+  if (!roomId) return null;
+  const store = readPersistRoomsStore();
+  const row = store[roomId];
+  if (!row || typeof row !== 'object') return null;
+  return row;
+}
+
+function clearPersistedRoom(roomId) {
+  if (!roomId) return;
+  const store = readPersistRoomsStore();
+  if (store[roomId]) {
+    delete store[roomId];
+    writePersistRoomsStore(store);
+  }
+}
+
+/** Soft-leave: keep PeerJS peer + queue alive, return to lobby, stay discoverable. */
+function parkSession() {
+  if (state.role !== 'host' || !state.peer?.id) {
+    destroySession();
+    return;
+  }
+  state.parked = true;
+  state.persistWhenEmpty = true;
+  hideRecordingNotice();
+  saveHostSession();
+  savePersistedRoom();
+  // Drop UI into lobby while peer keeps accepting joins
+  els.room.classList.add('hidden');
+  els.lobby.classList.remove('hidden');
+  setRoomActive(false);
+  setStatus('Parked · room still open', 'ok');
+  announceRoomNow();
+  renderActiveSessions();
+  logSession('room-park', {
+    roomId: state.hostId || state.peer.id,
+    queueCount: state.queue.length,
+  }, { sync: false });
+  toast('Lights stay on! Room is empty but the queue sticks around 🎨');
+}
+
+function unparkSession({ toastMsg = 'Welcome back — room resumed' } = {}) {
+  if (!state.parked) return;
+  state.parked = false;
+  state.recordingNoticeAcked = false;
+  showRoom();
+  ensurePlayer(state.videoId || DEFAULT_VIDEO);
+  startHostTick();
+  saveHostSession();
+  savePersistedRoom();
+  announceRoomNow();
+  setStatus(state.connections.size ? `Host · ${state.connections.size} linked` : 'Host · waiting', 'ok');
+  if (toastMsg) toast(toastMsg);
+}
+
+function resumeParkedRoom() {
+  if (state.role === 'host' && state.parked) {
+    unparkSession();
+    return true;
+  }
+  return false;
 }
 
 function destroySession() {
   const leavingRoomId = state.role === 'host' ? (state.hostId || state.peer?.id) : null;
-  if (leavingRoomId) unannounceRoom(leavingRoomId);
+  if (leavingRoomId) {
+    unannounceRoom(leavingRoomId);
+    clearPersistedRoom(leavingRoomId);
+  }
   stopReplayTimers();
   state.replay.active = false;
   state.replay.lobbyOnly = false;
@@ -2591,7 +2848,14 @@ function destroySession() {
   clearTimeout(state.recoverTimer);
   state.recoverTimer = null;
   state.passHostOnLeave = els.passHostCreate ? !!els.passHostCreate.checked : true;
+  state.persistWhenEmpty = els.persistEmptyCreate ? !!els.persistEmptyCreate.checked : false;
+  state.recordingEnabled = els.recordSessionCreate ? !!els.recordSessionCreate.checked : true;
+  state.recordingNoticeAcked = false;
+  state.recordingSettingsReady = false;
+  state.parked = false;
+  hideRecordingNotice();
   syncPassHostUI();
+  syncRecordingUI();
   if (state.player) {
     try { state.player.destroy(); } catch { /* ignore */ }
     state.player = null;
@@ -2638,9 +2902,14 @@ function saveHostSession() {
       name: state.name,
       sessionName: state.sessionName || '',
       passHostOnLeave: !!state.passHostOnLeave,
+      persistWhenEmpty: !!state.persistWhenEmpty,
+      recordingEnabled: !!state.recordingEnabled,
+      parked: !!state.parked,
+      ...snapshotPersistableMedia(),
       savedAt: Date.now(),
     }));
   } catch { /* ignore quota */ }
+  if (state.persistWhenEmpty) savePersistedRoom(state.hostId);
 }
 
 function clearHostSession() {
@@ -2715,11 +2984,15 @@ function roomDirectoryEntry() {
   const roomId = state.hostId || state.peer?.id;
   if (!roomId || state.role !== 'host') return null;
   let hostName = state.name || 'Host';
+  const participants = state.parked ? [] : participantSnapshot();
   return {
     roomId,
     sessionName: state.sessionName || defaultSessionName(),
     hostName,
-    participants: participantSnapshot(),
+    participants,
+    persistWhenEmpty: !!state.persistWhenEmpty,
+    empty: !!state.parked || state.connections.size === 0,
+    queueCount: (state.queue || []).length,
     updatedAt: Date.now(),
   };
 }
@@ -2731,6 +3004,9 @@ function upsertDirectoryRoom(entry) {
     sessionName: String(entry.sessionName || 'Untitled jam').slice(0, 40),
     hostName: String(entry.hostName || 'Host').slice(0, 24),
     participants: Array.isArray(entry.participants) ? entry.participants.slice(0, 24) : [],
+    persistWhenEmpty: !!entry.persistWhenEmpty,
+    empty: !!entry.empty,
+    queueCount: Number(entry.queueCount) || 0,
     updatedAt: Number(entry.updatedAt) || Date.now(),
   });
 }
@@ -2785,10 +3061,12 @@ function renderActiveSessions() {
     .filter((r) => Date.now() - (r.updatedAt || 0) <= DIR_STALE_MS)
     .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
 
-  // Hide our own live room from the lobby list while hosting (we're not on lobby UI anyway)
+  // Hide our own live (non-parked) room; parked own rooms stay visible so host can Resume
   const selfId = state.role === 'host' ? (state.hostId || state.peer?.id) : null;
-
-  const visible = rooms.filter((r) => r.roomId !== selfId);
+  const visible = rooms.filter((r) => {
+    if (r.roomId !== selfId) return true;
+    return !!state.parked;
+  });
 
   if (!visible.length) {
     // Local BC/storage counts as "online" even when PeerJS directory is down
@@ -2807,27 +3085,51 @@ function renderActiveSessions() {
   for (const room of visible) {
     const li = document.createElement('li');
     li.className = 'session-card';
+    const isOwnParked = selfId && room.roomId === selfId && state.parked;
     const names = (room.participants || [])
       .map((p) => (p && p.name ? String(p.name) : ''))
       .filter(Boolean);
+    const emptyOpen = !!room.empty || !!room.persistWhenEmpty && !names.length;
     const people = names.length
       ? names.map((n) => escapeHtml(n)).join(', ')
-      : escapeHtml(room.hostName || 'Host');
+      : (emptyOpen ? 'empty — queue waiting' : escapeHtml(room.hostName || 'Host'));
     const title = escapeHtml(room.sessionName || 'Untitled jam');
     const host = escapeHtml(room.hostName || 'Host');
+    const badge = (room.persistWhenEmpty || emptyOpen)
+      ? `<span class="session-pill">${room.queueCount ? `${room.queueCount} queued` : 'open when empty'}</span>`
+      : '';
+    const actionLabel = isOwnParked ? 'Resume' : 'Join';
+    const endBtn = isOwnParked
+      ? `<button class="btn danger" type="button" data-end-parked="${escapeHtml(room.roomId)}">End</button>`
+      : '';
     li.innerHTML = `
       <div class="session-card-main">
-        <p class="session-card-title">${title}</p>
+        <p class="session-card-title">${title}${badge}</p>
         <p class="session-card-meta">Host <span class="who">${host}</span> · ${people}</p>
       </div>
-      <button class="btn primary" type="button" data-join-room="${escapeHtml(room.roomId)}">Join</button>
+      <div class="session-card-actions">
+        <button class="btn primary" type="button" data-join-room="${escapeHtml(room.roomId)}">${actionLabel}</button>
+        ${endBtn}
+      </div>
     `;
     const btn = li.querySelector('button[data-join-room]');
     if (btn) {
       btn.addEventListener('click', () => {
         const code = btn.getAttribute('data-join-room');
+        if (isOwnParked) {
+          resumeParkedRoom();
+          return;
+        }
         if (els.roomInput) els.roomInput.value = code;
         joinRoom(code);
+      });
+    }
+    const end = li.querySelector('button[data-end-parked]');
+    if (end) {
+      end.addEventListener('click', () => {
+        clearHostSession();
+        destroySession();
+        toast('Parked room ended');
       });
     }
     list.appendChild(li);
@@ -2853,6 +3155,9 @@ function handleDirectoryMessage(fromId, raw, conn) {
           sessionName: msg.sessionName,
           hostName: msg.hostName,
           participants: msg.participants,
+          persistWhenEmpty: msg.persistWhenEmpty,
+          empty: msg.empty,
+          queueCount: msg.queueCount,
           updatedAt: Date.now(),
         });
         broadcastDirectoryList();
@@ -3007,6 +3312,9 @@ function publishLocalDirectory(entry) {
     sessionName: entry.sessionName,
     hostName: entry.hostName,
     participants: entry.participants || [],
+    persistWhenEmpty: !!entry.persistWhenEmpty,
+    empty: !!entry.empty,
+    queueCount: Number(entry.queueCount) || 0,
     updatedAt: entry.updatedAt || Date.now(),
   };
   // Drop stale while writing
@@ -3279,8 +3587,14 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
   state.hostId = id;
   if (preferredId == null) {
     state.passHostOnLeave = els.passHostCreate ? !!els.passHostCreate.checked : true;
+    state.persistWhenEmpty = els.persistEmptyCreate ? !!els.persistEmptyCreate.checked : false;
+    state.recordingEnabled = els.recordSessionCreate ? !!els.recordSessionCreate.checked : true;
   }
+  state.parked = false;
+  state.recordingNoticeAcked = false;
+  state.recordingSettingsReady = true;
   syncPassHostUI();
+  syncRecordingUI();
   ensureAcceptingConnections();
   peer.on('error', (err) => {
     console.error(err);
@@ -3288,7 +3602,7 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
     setStatus('Error', 'err');
   });
   showRoom();
-  ensurePlayer(DEFAULT_VIDEO);
+  ensurePlayer(state.videoId || DEFAULT_VIDEO);
   startHostTick();
   setStatus('Host · waiting', 'ok');
   history.replaceState(null, '', roomUrl(id));
@@ -3306,6 +3620,10 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
 
 async function createRoom() {
   try {
+    if (state.parked || state.role === 'host' || state.role === 'guest') {
+      clearHostSession();
+      destroySession();
+    }
     await createRoomAsHost(null);
   } catch (err) {
     console.error(err);
@@ -3320,8 +3638,20 @@ async function joinRoom(roomCode) {
     toast('Enter a room code');
     return;
   }
+  if (state.parked && (state.hostId === code || state.peer?.id === code)) {
+    resumeParkedRoom();
+    return;
+  }
+  if (state.parked || state.role === 'host' || state.role === 'guest') {
+    clearHostSession();
+    destroySession();
+  }
   clearHostSession();
   clearSessionLog();
+  state.recordingNoticeAcked = false;
+  state.recordingSettingsReady = false;
+  // Guests inherit recordingEnabled via settings; default true until host says otherwise
+  state.recordingEnabled = true;
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
   // Guests adopt the host's session name via settings; optional lobby field is a create hint.
@@ -3383,13 +3713,52 @@ async function enterRoomFromUrl(roomCode) {
       state.passHostOnLeave = saved.passHostOnLeave;
       if (els.passHostCreate) els.passHostCreate.checked = saved.passHostOnLeave;
     }
+    if (typeof saved.persistWhenEmpty === 'boolean') {
+      state.persistWhenEmpty = saved.persistWhenEmpty;
+      if (els.persistEmptyCreate) els.persistEmptyCreate.checked = saved.persistWhenEmpty;
+    }
+    if (typeof saved.recordingEnabled === 'boolean') {
+      state.recordingEnabled = saved.recordingEnabled;
+      if (els.recordSessionCreate) els.recordSessionCreate.checked = saved.recordingEnabled;
+    }
+    applyPersistedMedia(saved);
     try {
       await createRoomAsHost(code, { toastMsg: 'Welcome back — you’re still the host' });
+      if (saved.parked && state.persistWhenEmpty && state.connections.size === 0) {
+        parkSession();
+      }
       return;
     } catch (err) {
       console.warn('host reclaim failed, joining as guest', err);
       clearHostSession();
       toast('Couldn’t reclaim host — joining as guest');
+    }
+  }
+  // Cross-refresh reclaim via localStorage snapshot (persist-when-empty rooms)
+  const persisted = loadPersistedRoom(code);
+  if (persisted) {
+    if (persisted.name) {
+      state.name = persisted.name;
+      els.name.value = persisted.name;
+    }
+    if (persisted.sessionName) {
+      state.sessionName = String(persisted.sessionName).slice(0, 40);
+      if (els.sessionNameInput) els.sessionNameInput.value = state.sessionName;
+      updateSessionTitle();
+    }
+    if (typeof persisted.passHostOnLeave === 'boolean') {
+      state.passHostOnLeave = persisted.passHostOnLeave;
+      if (els.passHostCreate) els.passHostCreate.checked = persisted.passHostOnLeave;
+    }
+    state.persistWhenEmpty = true;
+    if (els.persistEmptyCreate) els.persistEmptyCreate.checked = true;
+    applyPersistedMedia(persisted);
+    try {
+      await createRoomAsHost(code, { toastMsg: 'Room reopened — queue restored 🎨' });
+      return;
+    } catch (err) {
+      console.warn('persisted room reclaim failed, joining as guest', err);
+      toast('Couldn’t reopen parked room — joining as guest');
     }
   }
   await joinRoom(code);
@@ -3488,6 +3857,8 @@ els.peopleRenameForm?.addEventListener('submit', (e) => {
   syncMobileNameInputs();
 });
 
+els.recordingModalOk?.addEventListener('click', () => ackRecordingNotice());
+
 // Boot
 els.name.value = randomName();
 syncPreviousChatAvailability();
@@ -3501,6 +3872,10 @@ startDirectoryPresence();
 window.addEventListener('beforeunload', () => {
   if (state.role === 'host') {
     const id = state.hostId || state.peer?.id;
+    if (state.persistWhenEmpty) {
+      saveHostSession();
+      savePersistedRoom(id);
+    }
     if (id) unannounceRoom(id);
   }
 });

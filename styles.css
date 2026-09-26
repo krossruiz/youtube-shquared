@@ -232,6 +232,26 @@ input:focus {
   padding: 10px 14px;
   white-space: nowrap;
 }
+.session-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: center;
+}
+.session-pill {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 2px 8px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  vertical-align: middle;
+  color: #5a2d00;
+  background: #ffe566;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 1px 1px 0 var(--crayon-orange, #ff8a3d);
+}
 
 /* —— Session title chip in room —— */
 .session-title {
@@ -1667,4 +1687,56 @@ body.replay-active #guest-note:not(.hidden) {
   body.room-active .stamp-btn {
     min-width: 0;
   }
+}
+
+
+/* —— Recording privacy modal —— */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 2000;
+  display: grid;
+  place-items: center;
+  padding: 20px;
+  background: rgba(20, 12, 40, 0.55);
+  backdrop-filter: blur(2px);
+}
+.modal-backdrop.hidden,
+.modal-backdrop[hidden] {
+  display: none !important;
+}
+body.modal-open {
+  overflow: hidden;
+}
+.modal-card {
+  width: min(420px, 100%);
+  padding: 22px 22px 18px;
+  background: #fffef6;
+  border: var(--fat-border);
+  border-radius: 22px;
+  box-shadow: 6px 6px 0 var(--crayon-purple, #7b4dff);
+  text-align: center;
+}
+.modal-emoji {
+  margin: 0 0 6px;
+  font-size: 2.4rem;
+  line-height: 1;
+}
+.modal-card h2 {
+  margin: 0 0 10px;
+  font-size: 1.35rem;
+  color: var(--ink);
+}
+.modal-body {
+  margin: 0 0 16px;
+  font-size: 0.95rem;
+  line-height: 1.45;
+  color: #333;
+  text-align: left;
+}
+.modal-card .btn {
+  min-width: 180px;
+}
+body.recording-off .session-log-export {
+  display: none !important;
 }

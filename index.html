@@ -73,6 +73,14 @@
         <input id="pass-host-create" type="checkbox" checked />
         <span>If the host leaves, pass hosting to a random guest</span>
       </label>
+      <label class="check-row" for="persist-empty-create">
+        <input id="persist-empty-create" type="checkbox" />
+        <span>Keep room open when empty — queue sticks around! 🎨</span>
+      </label>
+      <label class="check-row" for="record-session-create">
+        <input id="record-session-create" type="checkbox" checked />
+        <span>Record this jam for later playback 📼</span>
+      </label>
 
       <div id="active-sessions" class="active-sessions" aria-live="polite">
         <div class="active-sessions-head">
@@ -192,7 +200,7 @@
                 </label>
               </div>
               <ul id="peer-list"></ul>
-              <div class="session-log-export">
+              <div id="session-log-export" class="session-log-export">
                 <button id="export-log-btn" class="btn ghost export-log-btn" type="button">Export session log</button>
                 <label class="btn ghost load-session-btn export-log-btn" for="load-session-input-room">Load session for playback</label>
                 <input id="load-session-input-room" class="sr-only" type="file" accept="application/json,.json" />
@@ -224,6 +232,18 @@
     </section>
 
     <div id="toast" class="toast hidden" role="status"></div>
+
+    <div id="recording-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="recording-modal-title" hidden>
+      <div class="modal-card anim-pop">
+        <p class="modal-emoji" aria-hidden="true">📼</p>
+        <h2 id="recording-modal-title">This jam is being recorded</h2>
+        <p class="modal-body">
+          Actions in this room are saved to a <strong>session log</strong> so someone can export and replay later.
+          Nothing is uploaded automatically — but prepare for the possibility of being recorded and act accordingly.
+        </p>
+        <button id="recording-modal-ok" class="btn primary" type="button">Got it — stamp on!</button>
+      </div>
+    </div>
   </div>
 
   <script src="https://www.youtube.com/iframe_api"></script>
