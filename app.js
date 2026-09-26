@@ -28,6 +28,10 @@ const els = {
   passHostToggle: document.getElementById('pass-host-toggle'),
   recordingModal: document.getElementById('recording-modal'),
   recordingModalOk: document.getElementById('recording-modal-ok'),
+  nameModal: document.getElementById('name-modal'),
+  nameModalInput: document.getElementById('name-modal-input'),
+  nameModalOk: document.getElementById('name-modal-ok'),
+  nameModalCancel: document.getElementById('name-modal-cancel'),
   sessionLogExport: document.getElementById('session-log-export'),
   copyLink: document.getElementById('copy-link-btn'),
   leave: document.getElementById('leave-btn'),
@@ -128,6 +132,7 @@ const state = {
   recoverTimer: null,
   sessionLog: [], // ring buffer of structured session events
   lastPlaybackLog: { type: null, at: 0 },
+  chatHistory: [], // live current-chat messages for late joiners
   chatTab: 'current', // 'previous' | 'current'
   mobileTab: 'queue', // 'queue' | 'chat' | 'people'
   replay: {
@@ -2051,13 +2056,66 @@ function escapeHtml(s) {
   return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-function addChat(name, text, peerId, { log = true } = {}) {
+const CHAT_HISTORY_MAX = 200;
+
+function clearChatHistory() {
+  state.chatHistory = [];
+  if (els.chatLogCurrent) els.chatLogCurrent.innerHTML = '';
+}
+
+function appendChatLine(name, text, peerId) {
+  if (!els.chatLogCurrent) return;
   const line = document.createElement('div');
   line.className = 'chat-line';
   if (peerId) line.dataset.peerId = peerId;
   line.innerHTML = `<span class="who">${escapeHtml(name)}</span><span>${escapeHtml(text)}</span>`;
   els.chatLogCurrent.appendChild(line);
   els.chatLogCurrent.scrollTop = els.chatLogCurrent.scrollHeight;
+}
+
+function pushChatHistory(name, text, peerId, at = Date.now()) {
+  state.chatHistory.push({
+    name: String(name || 'Someone'),
+    text: String(text || ''),
+    peerId: peerId || null,
+    at: at || Date.now(),
+  });
+  if (state.chatHistory.length > CHAT_HISTORY_MAX) {
+    state.chatHistory.splice(0, state.chatHistory.length - CHAT_HISTORY_MAX);
+  }
+}
+
+function chatHistoryPayload() {
+  return {
+    type: 'chat-history',
+    messages: state.chatHistory.slice(-CHAT_HISTORY_MAX).map((m) => ({
+      name: m.name,
+      text: m.text,
+      peerId: m.peerId || null,
+      at: m.at || null,
+    })),
+  };
+}
+
+function applyChatHistory(messages) {
+  const list = Array.isArray(messages) ? messages : [];
+  state.chatHistory = [];
+  if (els.chatLogCurrent) els.chatLogCurrent.innerHTML = '';
+  for (const raw of list) {
+    if (!raw) continue;
+    const name = raw.name || 'Someone';
+    const text = raw.text || '';
+    const peerId = raw.peerId || null;
+    const at = raw.at || Date.now();
+    pushChatHistory(name, text, peerId, at);
+    appendChatLine(name, text, peerId);
+  }
+  if (els.chatLogCurrent) els.chatLogCurrent.scrollTop = els.chatLogCurrent.scrollHeight;
+}
+
+function addChat(name, text, peerId, { log = true, store = true } = {}) {
+  if (store) pushChatHistory(name, text, peerId);
+  appendChatLine(name, text, peerId);
   if (log && text) {
     logSession('chat', { text }, {
       by: name,
@@ -2071,6 +2129,9 @@ function rewriteChatNames(peerId, newName) {
   if (!peerId) return;
   const lines = els.chatLogCurrent.querySelectorAll(`.chat-line[data-peer-id="${CSS.escape(peerId)}"] .who`);
   for (const who of lines) who.textContent = newName;
+  for (const m of state.chatHistory) {
+    if (m.peerId === peerId) m.name = newName;
+  }
 }
 
 function applyRename(peerId, newName) {
@@ -2239,6 +2300,7 @@ function handleMessage(fromId, raw) {
         sendTo(conn, { type: 'state', ...currentPlayback() });
         sendTo(conn, queuePayload());
         sendTo(conn, settingsPayload());
+        sendTo(conn, chatHistoryPayload());
         broadcast({ type: 'peer-join', id: fromId, name: msg.name, role: msg.role }, fromId);
         logSession('room-join', {
           role: msg.role || 'guest',
@@ -2289,6 +2351,7 @@ function handleMessage(fromId, raw) {
         sendTo(conn, { type: 'state', ...currentPlayback() });
         sendTo(conn, queuePayload());
         sendTo(conn, settingsPayload());
+        sendTo(conn, chatHistoryPayload());
       }
       break;
     }
@@ -2300,6 +2363,11 @@ function handleMessage(fromId, raw) {
       addChat(msg.name || 'Someone', msg.text || '', pid);
       // Host relays so all guests see each other (star topology).
       if (state.role === 'host') broadcast({ type: 'chat', peerId: pid, name: msg.name, text: msg.text, at: msg.at }, fromId);
+      break;
+    }
+    case 'chat-history': {
+      // Snapshot of messages from before this peer joined (host → guest on hello).
+      if (state.role === 'guest') applyChatHistory(msg.messages);
       break;
     }
     case 'rename': {
@@ -2634,6 +2702,76 @@ function applyRecordingEnabled(on, { fromRemote = false } = {}) {
   }
 }
 
+let nameModalWaiter = null;
+
+function hideNameModal() {
+  const modal = els.nameModal;
+  if (!modal) return;
+  modal.classList.add('hidden');
+  modal.hidden = true;
+  // Only drop modal-open if recording notice is not also up
+  if (!els.recordingModal || els.recordingModal.hidden || els.recordingModal.classList.contains('hidden')) {
+    document.body.classList.remove('modal-open');
+  }
+}
+
+function resolveNameModal(value) {
+  const waiter = nameModalWaiter;
+  nameModalWaiter = null;
+  hideNameModal();
+  if (waiter) waiter(value);
+}
+
+function currentDisplayNameHint() {
+  const fromState = String(state.name || '').trim();
+  if (fromState) return fromState.slice(0, 24);
+  const fromLobby = String(els.name?.value || '').trim();
+  if (fromLobby) return fromLobby.slice(0, 24);
+  return randomName();
+}
+
+/** Kid Pix join modal — resolves trimmed name, or null if cancelled. Prefills existing display name. */
+function promptGuestName() {
+  return new Promise((resolve) => {
+    if (!els.nameModal || !els.nameModalInput) {
+      resolve(currentDisplayNameHint());
+      return;
+    }
+    if (nameModalWaiter) {
+      // Already open — replace waiter so only the latest join continues
+      const prev = nameModalWaiter;
+      nameModalWaiter = resolve;
+      prev(null);
+    } else {
+      nameModalWaiter = resolve;
+    }
+    els.nameModalInput.value = currentDisplayNameHint();
+    els.nameModal.classList.remove('hidden');
+    els.nameModal.hidden = false;
+    document.body.classList.add('modal-open');
+    setTimeout(() => {
+      els.nameModalInput?.focus();
+      els.nameModalInput?.select();
+    }, 30);
+  });
+}
+
+function submitNameModal() {
+  const name = String(els.nameModalInput?.value || '').trim().slice(0, 24);
+  if (!name) {
+    toast('Enter a name');
+    els.nameModalInput?.focus();
+    return;
+  }
+  if (els.name) els.name.value = name;
+  state.name = name;
+  resolveNameModal(name);
+}
+
+function cancelNameModal() {
+  resolveNameModal(null);
+}
+
 function showRecordingNotice() {
   const modal = els.recordingModal;
   if (!modal) return;
@@ -2649,7 +2787,10 @@ function hideRecordingNotice() {
   if (!modal) return;
   modal.classList.add('hidden');
   modal.hidden = true;
-  document.body.classList.remove('modal-open');
+  // Keep scroll lock if the guest name modal is still up
+  if (!els.nameModal || els.nameModal.hidden || els.nameModal.classList.contains('hidden')) {
+    document.body.classList.remove('modal-open');
+  }
 }
 
 function ackRecordingNotice() {
@@ -2863,7 +3004,7 @@ function destroySession() {
     const mount = document.getElementById('yt-player');
     if (mount) mount.innerHTML = '';
   }
-  if (els.chatLogCurrent) els.chatLogCurrent.innerHTML = '';
+  clearChatHistory();
   if (els.chatLogPrevious) els.chatLogPrevious.innerHTML = '';
   state.queue = [];
   state.history = [];
@@ -3571,6 +3712,7 @@ function createPeer(preferredId = null) {
 
 async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created — share the link', quiet = false } = {}) {
   clearSessionLog();
+  if (!preferredId) clearChatHistory();
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
   if (!preferredId) {
@@ -3642,17 +3784,21 @@ async function joinRoom(roomCode) {
     resumeParkedRoom();
     return;
   }
+  // Ask for display name before tearing down / connecting (reuse lobby name if present).
+  const chosenName = await promptGuestName();
+  if (chosenName == null) return;
   if (state.parked || state.role === 'host' || state.role === 'guest') {
     clearHostSession();
     destroySession();
   }
   clearHostSession();
   clearSessionLog();
+  clearChatHistory();
   state.recordingNoticeAcked = false;
   state.recordingSettingsReady = false;
   // Guests inherit recordingEnabled via settings; default true until host says otherwise
   state.recordingEnabled = true;
-  state.name = (els.name.value || '').trim() || randomName();
+  state.name = chosenName;
   els.name.value = state.name;
   // Guests adopt the host's session name via settings; optional lobby field is a create hint.
   state.sessionName = readSessionNameInput() || 'Joining…';
@@ -3858,6 +4004,17 @@ els.peopleRenameForm?.addEventListener('submit', (e) => {
 });
 
 els.recordingModalOk?.addEventListener('click', () => ackRecordingNotice());
+els.nameModalOk?.addEventListener('click', () => submitNameModal());
+els.nameModalCancel?.addEventListener('click', () => cancelNameModal());
+els.nameModalInput?.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    submitNameModal();
+  } else if (e.key === 'Escape') {
+    e.preventDefault();
+    cancelNameModal();
+  }
+});
 
 // Boot
 els.name.value = randomName();
@@ -3891,6 +4048,10 @@ window.__ysqSnapshot = () => {
     rate: getPlayerRate(),
     playerState,
     videoId: state.videoId,
+    role: state.role,
+    name: state.name,
+    chatHistory: state.chatHistory.slice(),
+    chatDomCount: els.chatLogCurrent ? els.chatLogCurrent.querySelectorAll('.chat-line').length : 0,
     replay: {
       active: !!(state.replay && state.replay.active),
       playing: !!(state.replay && state.replay.playing),

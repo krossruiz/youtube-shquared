@@ -1740,3 +1740,38 @@ body.modal-open {
 body.recording-off .session-log-export {
   display: none !important;
 }
+
+.modal-field {
+  text-align: left;
+  margin: 0 0 16px;
+}
+.modal-field span {
+  display: block;
+  margin-bottom: 6px;
+  font-weight: 700;
+  color: var(--crayon-purple);
+}
+.modal-field input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px 14px;
+  font: inherit;
+  font-weight: 600;
+  border: var(--fat-border);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: 3px 3px 0 var(--crayon-yellow);
+}
+.modal-field input:focus {
+  outline: none;
+  box-shadow: 0 0 0 4px var(--crayon-yellow);
+}
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: center;
+}
+.modal-actions .btn {
+  min-width: 120px;
+}

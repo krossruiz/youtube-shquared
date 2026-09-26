@@ -244,6 +244,24 @@
         <button id="recording-modal-ok" class="btn primary" type="button">Got it — stamp on!</button>
       </div>
     </div>
+
+    <div id="name-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="name-modal-title" hidden>
+      <div class="modal-card anim-pop">
+        <p class="modal-emoji" aria-hidden="true">✏️</p>
+        <h2 id="name-modal-title">Pick your display name</h2>
+        <p class="modal-body">
+          Guests need a name so everyone knows who’s chatting and queueing. Stamp one in before you hop into the jam!
+        </p>
+        <label class="field modal-field" for="name-modal-input">
+          <span>Your name</span>
+          <input id="name-modal-input" type="text" maxlength="24" placeholder="Guest" autocomplete="nickname" />
+        </label>
+        <div class="modal-actions">
+          <button id="name-modal-cancel" class="btn ghost" type="button">Cancel</button>
+          <button id="name-modal-ok" class="btn primary" type="button">Join the jam!</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <script src="https://www.youtube.com/iframe_api"></script>
