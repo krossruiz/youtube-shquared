@@ -5,6 +5,13 @@ const HOST_TICK_MS = 2000;
 const DEFAULT_VIDEO = 'dQw4w9WgXcQ';
 const HOST_SESSION_KEY = 'ys-host-session';
 const HOST_RECOVER_MS = 2500; // give refreshing hosts time to reclaim their Peer id
+const HOWTO_DISMISS_KEY = 'ys-howto-dismissed';
+const DIR_HEARTBEAT_MS = 8000;
+const DIR_STALE_MS = 28000;
+const DIR_PRUNE_MS = 5000;
+const DIR_RECONNECT_MS = 4000;
+const DIR_LOCAL_KEY = 'ys-dir-rooms-v1';
+const DIR_BC_NAME = 'ys-dir-rooms-v1';
 
 const els = {
   lobby: document.getElementById('lobby'),
@@ -63,15 +70,36 @@ const els = {
   peopleRenameForm: document.getElementById('people-rename-form'),
   peopleName: document.getElementById('people-name-input'),
   passHostToggleMobile: document.getElementById('pass-host-toggle-mobile'),
+  sessionNameInput: document.getElementById('session-name-input'),
+  sessionTitle: document.getElementById('session-title'),
+  sessionsList: document.getElementById('sessions-list'),
+  sessionsStatus: document.getElementById('sessions-status'),
+  sessionsRefresh: document.getElementById('sessions-refresh-btn'),
+  howtoBanner: document.getElementById('howto-banner'),
+  howtoDismiss: document.getElementById('howto-dismiss-btn'),
 };
 
 const state = {
   role: null, // 'host' | 'guest'
   name: '',
+  sessionName: '',
   peer: null,
   hostId: null,
   connections: new Map(), // peerId -> DataConnection
   peers: new Map(), // peerId -> { name, role }
+  directory: {
+    peer: null,
+    conn: null,
+    isBroker: false,
+    connected: false,
+    starting: false,
+    rooms: new Map(), // roomId -> { roomId, sessionName, hostName, participants, updatedAt }
+    clients: new Map(), // broker: peerId -> DataConnection
+    announceTimer: null,
+    pruneTimer: null,
+    reconnectTimer: null,
+    bc: null, // BroadcastChannel for same-origin multi-tab presence
+  },
   player: null,
   ytReady: false,
   videoId: DEFAULT_VIDEO,
@@ -1701,7 +1729,11 @@ async function jumpToPastedVideo(raw) {
 
 
 function settingsPayload() {
-  return { type: 'settings', passHostOnLeave: !!state.passHostOnLeave };
+  return {
+    type: 'settings',
+    passHostOnLeave: !!state.passHostOnLeave,
+    sessionName: state.sessionName || defaultSessionName(),
+  };
 }
 
 function emitSettings() {
@@ -1784,6 +1816,7 @@ function becomeHost() {
   emitQueue();
   emitSettings();
   renderPeers();
+  announceRoomNow();
 }
 
 function rejoinNewHost(newHostId) {
@@ -2036,6 +2069,10 @@ function renameSelf(rawName) {
   applyRename(state.peer.id, name);
   broadcast({ type: 'rename', peerId: state.peer.id, name, oldName });
   logSession('rename', { oldName, name }, { sync: false });
+  if (state.role === 'host') {
+    saveHostSession();
+    announceRoomNow();
+  }
   toast(`Renamed to ${name}`);
 }
 
@@ -2171,6 +2208,7 @@ function handleMessage(fromId, raw) {
           name: msg.name || 'Guest',
           roomId: state.hostId,
         }, { by: msg.name || 'Guest', peerId: fromId, sync: false });
+        announceRoomNow();
       }
       break;
     }
@@ -2213,6 +2251,7 @@ function handleMessage(fromId, raw) {
         const conn = state.connections.get(fromId);
         sendTo(conn, { type: 'state', ...currentPlayback() });
         sendTo(conn, queuePayload());
+        sendTo(conn, settingsPayload());
       }
       break;
     }
@@ -2242,6 +2281,7 @@ function handleMessage(fromId, raw) {
       }
       if (state.role === 'host') {
         broadcast({ type: 'rename', peerId: pid, name: msg.name, oldName: msg.oldName }, fromId);
+        announceRoomNow();
       }
       break;
     }
@@ -2326,6 +2366,10 @@ function handleMessage(fromId, raw) {
         syncPassHostUI();
         // Host already broadcasts session-log for settings; guests ingest that.
       }
+      if (typeof msg.sessionName === 'string' && msg.sessionName.trim()) {
+        state.sessionName = msg.sessionName.trim().slice(0, 40);
+        updateSessionTitle();
+      }
       break;
     }
     case 'host-pass': {
@@ -2385,6 +2429,7 @@ function wireConnection(conn, remoteRoleHint = 'guest') {
         name: left?.name || 'Guest',
         roomId: state.hostId,
       }, { by: left?.name || 'Guest', peerId: deadId, sync: false });
+      announceRoomNow();
     }
     renderPeers();
     if (wasHostConn) {
@@ -2509,11 +2554,15 @@ function showRoom() {
   setMobileTab(state.mobileTab || 'queue');
   syncPassHostUI();
   syncTransportUI();
+  updateSessionTitle();
+  syncHowtoBanner();
   renderPeers();
   renderQueue();
 }
 
 function destroySession() {
+  const leavingRoomId = state.role === 'host' ? (state.hostId || state.peer?.id) : null;
+  if (leavingRoomId) unannounceRoom(leavingRoomId);
   stopReplayTimers();
   state.replay.active = false;
   state.replay.lobbyOnly = false;
@@ -2535,6 +2584,8 @@ function destroySession() {
   state.peer = null;
   state.role = null;
   state.hostId = null;
+  state.sessionName = '';
+  updateSessionTitle();
   state.acceptingConnections = false;
   state.recoveringHost = false;
   clearTimeout(state.recoverTimer);
@@ -2563,6 +2614,7 @@ function destroySession() {
   const u = new URL(location.href);
   u.searchParams.delete('room');
   history.replaceState(null, '', u.pathname + u.search);
+  renderActiveSessions();
 }
 
 
@@ -2584,6 +2636,7 @@ function saveHostSession() {
     sessionStorage.setItem(HOST_SESSION_KEY, JSON.stringify({
       roomId: state.hostId,
       name: state.name,
+      sessionName: state.sessionName || '',
       passHostOnLeave: !!state.passHostOnLeave,
       savedAt: Date.now(),
     }));
@@ -2592,6 +2645,596 @@ function saveHostSession() {
 
 function clearHostSession() {
   try { sessionStorage.removeItem(HOST_SESSION_KEY); } catch { /* ignore */ }
+}
+
+function directoryPeerId() {
+  // Scope by origin so local/prod lobbies don't mix on the shared PeerJS cloud.
+  const raw = (location.origin || 'local').replace(/[^a-zA-Z0-9]/g, '');
+  const key = (raw.slice(-36) || 'local').toLowerCase();
+  return (`ysqdir${key}`).slice(0, 60);
+}
+
+function defaultSessionName() {
+  const n = (state.name || els.name?.value || 'Jam').trim() || 'Jam';
+  return `${n}'s room`;
+}
+
+function readSessionNameInput() {
+  const raw = (els.sessionNameInput?.value || '').trim();
+  return raw.slice(0, 40);
+}
+
+function setSessionName(name, { emit = false } = {}) {
+  const next = String(name || '').trim().slice(0, 40) || defaultSessionName();
+  state.sessionName = next;
+  if (els.sessionNameInput && document.activeElement !== els.sessionNameInput) {
+    // Keep lobby field in sync when returning from a room
+  }
+  updateSessionTitle();
+  if (emit && state.role === 'host') {
+    emitSettings();
+    announceRoomNow();
+  }
+}
+
+function updateSessionTitle() {
+  if (!els.sessionTitle) return;
+  const label = state.sessionName || '—';
+  els.sessionTitle.textContent = `Session: ${label}`;
+  els.sessionTitle.title = label;
+}
+
+function isHowtoDismissed() {
+  try { return localStorage.getItem(HOWTO_DISMISS_KEY) === '1'; } catch { return false; }
+}
+
+function syncHowtoBanner() {
+  if (!els.howtoBanner) return;
+  const show = !isHowtoDismissed();
+  els.howtoBanner.classList.toggle('hidden', !show);
+}
+
+function dismissHowto() {
+  try { localStorage.setItem(HOWTO_DISMISS_KEY, '1'); } catch { /* ignore */ }
+  syncHowtoBanner();
+}
+
+function participantSnapshot() {
+  const rows = [];
+  if (state.peer?.id) {
+    rows.push({ name: state.name || 'Someone', role: state.role || 'guest' });
+  }
+  for (const [id, info] of state.peers) {
+    if (id === state.peer?.id) continue;
+    rows.push({ name: info.name || 'Someone', role: info.role || 'guest' });
+  }
+  return rows;
+}
+
+function roomDirectoryEntry() {
+  const roomId = state.hostId || state.peer?.id;
+  if (!roomId || state.role !== 'host') return null;
+  let hostName = state.name || 'Host';
+  return {
+    roomId,
+    sessionName: state.sessionName || defaultSessionName(),
+    hostName,
+    participants: participantSnapshot(),
+    updatedAt: Date.now(),
+  };
+}
+
+function upsertDirectoryRoom(entry) {
+  if (!entry || !entry.roomId) return;
+  state.directory.rooms.set(entry.roomId, {
+    roomId: entry.roomId,
+    sessionName: String(entry.sessionName || 'Untitled jam').slice(0, 40),
+    hostName: String(entry.hostName || 'Host').slice(0, 24),
+    participants: Array.isArray(entry.participants) ? entry.participants.slice(0, 24) : [],
+    updatedAt: Number(entry.updatedAt) || Date.now(),
+  });
+}
+
+function removeDirectoryRoom(roomId) {
+  if (!roomId) return;
+  state.directory.rooms.delete(roomId);
+}
+
+function pruneDirectoryRooms() {
+  const now = Date.now();
+  for (const [id, room] of state.directory.rooms) {
+    if (now - (room.updatedAt || 0) > DIR_STALE_MS) state.directory.rooms.delete(id);
+  }
+}
+
+function directoryListPayload() {
+  pruneDirectoryRooms();
+  return {
+    type: 'dir-list',
+    rooms: [...state.directory.rooms.values()],
+  };
+}
+
+function broadcastDirectoryList() {
+  if (!state.directory.isBroker) return;
+  const payload = JSON.stringify(directoryListPayload());
+  for (const conn of state.directory.clients.values()) {
+    if (conn.open) {
+      try { conn.send(payload); } catch { /* ignore */ }
+    }
+  }
+}
+
+function applyDirectoryList(rooms) {
+  state.directory.rooms.clear();
+  for (const r of rooms || []) upsertDirectoryRoom(r);
+  pruneDirectoryRooms();
+  renderActiveSessions();
+}
+
+function setDirectoryStatus(text) {
+  if (els.sessionsStatus) els.sessionsStatus.textContent = text;
+}
+
+function renderActiveSessions() {
+  pruneDirectoryRooms();
+  const list = els.sessionsList;
+  if (!list) return;
+  list.innerHTML = '';
+  const rooms = [...state.directory.rooms.values()]
+    .filter((r) => Date.now() - (r.updatedAt || 0) <= DIR_STALE_MS)
+    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0));
+
+  // Hide our own live room from the lobby list while hosting (we're not on lobby UI anyway)
+  const selfId = state.role === 'host' ? (state.hostId || state.peer?.id) : null;
+
+  const visible = rooms.filter((r) => r.roomId !== selfId);
+
+  if (!visible.length) {
+    // Local BC/storage counts as "online" even when PeerJS directory is down
+    if (state.directory.connected || state.directory.isBroker || state.directory.bc) {
+      setDirectoryStatus('No live rooms yet — create one and stamp a session name on it!');
+    } else if (state.directory.starting) {
+      setDirectoryStatus('Looking for live rooms…');
+    } else {
+      setDirectoryStatus('Directory offline — try Refresh, or join with a room code.');
+    }
+    return;
+  }
+
+  setDirectoryStatus(`${visible.length} live session${visible.length === 1 ? '' : 's'} — tap Join to hop in:`);
+
+  for (const room of visible) {
+    const li = document.createElement('li');
+    li.className = 'session-card';
+    const names = (room.participants || [])
+      .map((p) => (p && p.name ? String(p.name) : ''))
+      .filter(Boolean);
+    const people = names.length
+      ? names.map((n) => escapeHtml(n)).join(', ')
+      : escapeHtml(room.hostName || 'Host');
+    const title = escapeHtml(room.sessionName || 'Untitled jam');
+    const host = escapeHtml(room.hostName || 'Host');
+    li.innerHTML = `
+      <div class="session-card-main">
+        <p class="session-card-title">${title}</p>
+        <p class="session-card-meta">Host <span class="who">${host}</span> · ${people}</p>
+      </div>
+      <button class="btn primary" type="button" data-join-room="${escapeHtml(room.roomId)}">Join</button>
+    `;
+    const btn = li.querySelector('button[data-join-room]');
+    if (btn) {
+      btn.addEventListener('click', () => {
+        const code = btn.getAttribute('data-join-room');
+        if (els.roomInput) els.roomInput.value = code;
+        joinRoom(code);
+      });
+    }
+    list.appendChild(li);
+  }
+}
+
+function sendDir(conn, msg) {
+  if (conn?.open) {
+    try { conn.send(JSON.stringify(msg)); } catch { /* ignore */ }
+  }
+}
+
+function handleDirectoryMessage(fromId, raw, conn) {
+  let msg;
+  try { msg = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return; }
+  if (!msg || !msg.type) return;
+
+  if (state.directory.isBroker) {
+    switch (msg.type) {
+      case 'dir-announce': {
+        upsertDirectoryRoom({
+          roomId: msg.roomId,
+          sessionName: msg.sessionName,
+          hostName: msg.hostName,
+          participants: msg.participants,
+          updatedAt: Date.now(),
+        });
+        broadcastDirectoryList();
+        renderActiveSessions();
+        break;
+      }
+      case 'dir-unannounce': {
+        removeDirectoryRoom(msg.roomId);
+        broadcastDirectoryList();
+        renderActiveSessions();
+        break;
+      }
+      case 'dir-hello':
+      case 'dir-request': {
+        sendDir(conn, directoryListPayload());
+        break;
+      }
+      default:
+        break;
+    }
+    return;
+  }
+
+  // Client of the directory broker
+  if (msg.type === 'dir-list') {
+    applyDirectoryList(msg.rooms);
+    state.directory.connected = true;
+  }
+}
+
+function wireDirectoryConnection(conn) {
+  const onOpen = () => {
+    if (state.directory.isBroker) {
+      state.directory.clients.set(conn.peer, conn);
+      sendDir(conn, directoryListPayload());
+    } else {
+      state.directory.conn = conn;
+      state.directory.connected = true;
+      setDirectoryStatus('Looking for live rooms…');
+      sendDir(conn, { type: 'dir-hello' });
+      // If we are hosting, announce immediately
+      announceRoomNow();
+    }
+    renderActiveSessions();
+  };
+  conn.on('open', onOpen);
+  conn.on('data', (data) => handleDirectoryMessage(conn.peer, data, conn));
+  conn.on('close', () => {
+    if (state.directory.isBroker) {
+      state.directory.clients.delete(conn.peer);
+    } else if (state.directory.conn === conn) {
+      state.directory.conn = null;
+      state.directory.connected = false;
+      scheduleDirectoryReconnect('Directory peer left — reconnecting…');
+    }
+  });
+  conn.on('error', () => {
+    /* reconnect path handles drop */
+  });
+  if (conn.open) onOpen();
+}
+
+function clearDirectoryTimers() {
+  clearInterval(state.directory.announceTimer);
+  clearInterval(state.directory.pruneTimer);
+  clearTimeout(state.directory.reconnectTimer);
+  state.directory.announceTimer = null;
+  state.directory.pruneTimer = null;
+  state.directory.reconnectTimer = null;
+}
+
+function destroyDirectoryPeer() {
+  clearDirectoryTimers();
+  if (state.directory.conn) {
+    try { state.directory.conn.close(); } catch { /* ignore */ }
+  }
+  for (const c of state.directory.clients.values()) {
+    try { c.close(); } catch { /* ignore */ }
+  }
+  state.directory.clients.clear();
+  state.directory.conn = null;
+  if (state.directory.peer) {
+    try { state.directory.peer.destroy(); } catch { /* ignore */ }
+  }
+  state.directory.peer = null;
+  state.directory.isBroker = false;
+  state.directory.connected = false;
+  state.directory.starting = false;
+}
+
+function startDirectoryPruneLoop() {
+  clearInterval(state.directory.pruneTimer);
+  state.directory.pruneTimer = setInterval(() => {
+    const before = state.directory.rooms.size;
+    mergeLocalDirectoryIntoState();
+    pruneDirectoryRooms();
+    if (state.directory.rooms.size !== before) {
+      if (state.directory.isBroker) broadcastDirectoryList();
+      renderActiveSessions();
+    } else {
+      renderActiveSessions();
+    }
+  }, DIR_PRUNE_MS);
+}
+
+function startAnnounceLoop() {
+  clearInterval(state.directory.announceTimer);
+  state.directory.announceTimer = setInterval(() => {
+    if (state.role === 'host') announceRoomNow();
+  }, DIR_HEARTBEAT_MS);
+}
+
+
+function readLocalDirectoryStore() {
+  try {
+    const raw = localStorage.getItem(DIR_LOCAL_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    return data && typeof data === 'object' ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+function writeLocalDirectoryStore(map) {
+  try {
+    localStorage.setItem(DIR_LOCAL_KEY, JSON.stringify(map));
+  } catch { /* ignore quota */ }
+}
+
+function mergeLocalDirectoryIntoState() {
+  const store = readLocalDirectoryStore();
+  const now = Date.now();
+  let changed = false;
+  for (const [roomId, entry] of Object.entries(store)) {
+    if (!entry || !roomId) continue;
+    if (now - (entry.updatedAt || 0) > DIR_STALE_MS) continue;
+    const prev = state.directory.rooms.get(roomId);
+    if (!prev || (entry.updatedAt || 0) >= (prev.updatedAt || 0)) {
+      upsertDirectoryRoom(entry);
+      changed = true;
+    }
+  }
+  return changed;
+}
+
+function publishLocalDirectory(entry) {
+  if (!entry || !entry.roomId) return;
+  const store = readLocalDirectoryStore();
+  store[entry.roomId] = {
+    roomId: entry.roomId,
+    sessionName: entry.sessionName,
+    hostName: entry.hostName,
+    participants: entry.participants || [],
+    updatedAt: entry.updatedAt || Date.now(),
+  };
+  // Drop stale while writing
+  const now = Date.now();
+  for (const [id, row] of Object.entries(store)) {
+    if (now - (row.updatedAt || 0) > DIR_STALE_MS) delete store[id];
+  }
+  writeLocalDirectoryStore(store);
+  try {
+    state.directory.bc?.postMessage({ type: 'dir-announce', room: store[entry.roomId] });
+  } catch { /* ignore */ }
+}
+
+function retractLocalDirectory(roomId) {
+  if (!roomId) return;
+  const store = readLocalDirectoryStore();
+  if (store[roomId]) {
+    delete store[roomId];
+    writeLocalDirectoryStore(store);
+  }
+  try {
+    state.directory.bc?.postMessage({ type: 'dir-unannounce', roomId });
+  } catch { /* ignore */ }
+}
+
+function onLocalDirectoryMessage(msg) {
+  if (!msg || !msg.type) return;
+  if (msg.type === 'dir-announce' && msg.room) {
+    upsertDirectoryRoom(msg.room);
+    renderActiveSessions();
+  } else if (msg.type === 'dir-unannounce' && msg.roomId) {
+    removeDirectoryRoom(msg.roomId);
+    renderActiveSessions();
+  } else if (msg.type === 'dir-request') {
+    // Hosts re-publish so the asker sees us via BC + storage
+    if (state.role === 'host') announceRoomNow();
+  } else if (msg.type === 'dir-sync' && Array.isArray(msg.rooms)) {
+    for (const r of msg.rooms) upsertDirectoryRoom(r);
+    renderActiveSessions();
+  }
+}
+
+function startLocalDirectoryPresence() {
+  mergeLocalDirectoryIntoState();
+  renderActiveSessions();
+  if (typeof BroadcastChannel === 'undefined') return;
+  if (state.directory.bc) return;
+  try {
+    const bc = new BroadcastChannel(DIR_BC_NAME);
+    state.directory.bc = bc;
+    bc.onmessage = (ev) => onLocalDirectoryMessage(ev.data);
+    // Ask other tabs to re-announce
+    bc.postMessage({ type: 'dir-request' });
+  } catch (err) {
+    console.warn('BroadcastChannel unavailable', err);
+  }
+}
+
+function announceRoomNow() {
+  const entry = roomDirectoryEntry();
+  if (!entry) return;
+
+  // Always publish on same-origin tabs (BroadcastChannel + localStorage).
+  // PeerJS directory is best-effort for cross-browser / cross-device.
+  upsertDirectoryRoom(entry);
+  publishLocalDirectory(entry);
+
+  if (state.directory.isBroker) {
+    broadcastDirectoryList();
+    renderActiveSessions();
+    return;
+  }
+  if (state.directory.conn?.open) {
+    sendDir(state.directory.conn, { type: 'dir-announce', ...entry });
+  }
+  renderActiveSessions();
+}
+
+function unannounceRoom(roomId) {
+  const id = roomId || state.hostId || state.peer?.id;
+  if (!id) return;
+  removeDirectoryRoom(id);
+  retractLocalDirectory(id);
+  if (state.directory.isBroker) {
+    broadcastDirectoryList();
+  } else if (state.directory.conn?.open) {
+    sendDir(state.directory.conn, { type: 'dir-unannounce', roomId: id });
+  }
+  renderActiveSessions();
+}
+
+function scheduleDirectoryReconnect(statusText) {
+  if (state.directory.reconnectTimer) return;
+  if (statusText) setDirectoryStatus(statusText);
+  state.directory.reconnectTimer = setTimeout(() => {
+    state.directory.reconnectTimer = null;
+    startDirectoryPresence({ force: true });
+  }, DIR_RECONNECT_MS);
+}
+
+async function becomeDirectoryBroker() {
+  const dirId = directoryPeerId();
+  destroyDirectoryPeer();
+  state.directory.starting = true;
+  setDirectoryStatus('Starting session directory…');
+  try {
+    const { peer } = await createPeer(dirId);
+    state.directory.peer = peer;
+    state.directory.isBroker = true;
+    state.directory.connected = true;
+    state.directory.starting = false;
+    peer.on('connection', (conn) => wireDirectoryConnection(conn));
+    peer.on('error', (err) => {
+      console.warn('directory broker error', err);
+      destroyDirectoryPeer();
+      scheduleDirectoryReconnect('Directory hiccup — retrying…');
+    });
+    peer.on('disconnected', () => {
+      try { peer.reconnect(); } catch { /* ignore */ }
+    });
+    startDirectoryPruneLoop();
+    startAnnounceLoop();
+    // If we are already hosting, publish ourselves
+    announceRoomNow();
+    setDirectoryStatus('No live rooms yet — create one and stamp a session name on it!');
+    renderActiveSessions();
+  } catch (err) {
+    console.warn('could not claim directory id', err);
+    state.directory.starting = false;
+    // Someone else holds the broker — retry as client shortly (avoid tight claim loops)
+    scheduleDirectoryReconnect('Directory busy — rejoining as client…');
+  }
+}
+
+async function connectDirectoryAsClient() {
+  const dirId = directoryPeerId();
+  destroyDirectoryPeer();
+  state.directory.starting = true;
+  setDirectoryStatus('Looking for live rooms…');
+  try {
+    const { peer } = await createPeer();
+    state.directory.peer = peer;
+    state.directory.isBroker = false;
+
+    let settled = false;
+    const failTimer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      // Broker missing or unreachable — try to become it (local list still works via BC)
+      try { peer.destroy(); } catch { /* ignore */ }
+      state.directory.peer = null;
+      becomeDirectoryBroker();
+    }, 8000);
+
+    peer.on('error', (err) => {
+      const missing = err?.type === 'peer-unavailable';
+      if (missing && !settled) {
+        settled = true;
+        clearTimeout(failTimer);
+        try { peer.destroy(); } catch { /* ignore */ }
+        state.directory.peer = null;
+        becomeDirectoryBroker();
+        return;
+      }
+      // After open, peer-unavailable on connect already handled; other errors reconnect
+      if (settled) {
+        console.warn('directory client error', err);
+        destroyDirectoryPeer();
+        scheduleDirectoryReconnect('Directory offline — retrying…');
+      }
+    });
+
+    const conn = peer.connect(dirId, { reliable: true });
+    wireDirectoryConnection(conn);
+    conn.on('open', () => {
+      if (settled && state.directory.conn && state.directory.conn !== conn) return;
+      settled = true;
+      clearTimeout(failTimer);
+      state.directory.starting = false;
+    });
+
+    peer.on('disconnected', () => {
+      try { peer.reconnect(); } catch { /* ignore */ }
+    });
+
+    startDirectoryPruneLoop();
+    startAnnounceLoop();
+  } catch (err) {
+    console.warn('directory client failed', err);
+    state.directory.starting = false;
+    scheduleDirectoryReconnect('Directory offline — retrying…');
+  }
+}
+
+async function startDirectoryPresence({ force = false } = {}) {
+  startLocalDirectoryPresence();
+  mergeLocalDirectoryIntoState();
+  renderActiveSessions();
+  if (state.directory.starting && !force) return;
+  if (state.directory.peer && !force) return;
+  if (force) destroyDirectoryPeer();
+  // Prefer joining existing broker; fall back to claiming the id.
+  // PeerJS path is best-effort — local BC/storage already lists same-origin rooms.
+  await connectDirectoryAsClient();
+}
+
+function refreshDirectoryList() {
+  mergeLocalDirectoryIntoState();
+  try { state.directory.bc?.postMessage({ type: 'dir-request' }); } catch { /* ignore */ }
+  if (state.directory.isBroker) {
+    broadcastDirectoryList();
+    renderActiveSessions();
+    toast('Session list refreshed');
+    return;
+  }
+  if (state.directory.conn?.open) {
+    sendDir(state.directory.conn, { type: 'dir-request' });
+    toast('Refreshing sessions…');
+    return;
+  }
+  renderActiveSessions();
+  // Soft reconnect PeerJS directory without wiping local list
+  if (!state.directory.peer && !state.directory.starting) {
+    startDirectoryPresence({ force: true });
+    toast('Reconnecting to directory…');
+  } else {
+    toast('Session list refreshed');
+  }
 }
 
 function createPeer(preferredId = null) {
@@ -2622,6 +3265,13 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
   clearSessionLog();
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
+  if (!preferredId) {
+    setSessionName(readSessionNameInput() || defaultSessionName());
+  } else if (!state.sessionName) {
+    setSessionName(readSessionNameInput() || defaultSessionName());
+  } else {
+    updateSessionTitle();
+  }
   if (!quiet) setStatus(preferredId ? 'Reclaiming host…' : 'Connecting…', 'warn');
   const { peer, id } = await createPeer(preferredId);
   state.peer = peer;
@@ -2647,8 +3297,10 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
     role: 'host',
     name: state.name,
     roomId: id,
+    sessionName: state.sessionName,
     reclaimed: !!preferredId,
   }, { sync: false });
+  announceRoomNow();
   if (toastMsg) toast(toastMsg);
 }
 
@@ -2672,6 +3324,9 @@ async function joinRoom(roomCode) {
   clearSessionLog();
   state.name = (els.name.value || '').trim() || randomName();
   els.name.value = state.name;
+  // Guests adopt the host's session name via settings; optional lobby field is a create hint.
+  state.sessionName = readSessionNameInput() || 'Joining…';
+  updateSessionTitle();
   setStatus('Connecting…', 'warn');
   try {
     const { peer } = await createPeer();
@@ -2718,6 +3373,11 @@ async function enterRoomFromUrl(roomCode) {
     if (saved.name) {
       state.name = saved.name;
       els.name.value = saved.name;
+    }
+    if (saved.sessionName) {
+      state.sessionName = String(saved.sessionName).slice(0, 40);
+      if (els.sessionNameInput) els.sessionNameInput.value = state.sessionName;
+      updateSessionTitle();
     }
     if (typeof saved.passHostOnLeave === 'boolean') {
       state.passHostOnLeave = saved.passHostOnLeave;
@@ -2833,6 +3493,17 @@ els.name.value = randomName();
 syncPreviousChatAvailability();
 setMobileTab('queue');
 wireMobileTabs();
+syncHowtoBanner();
+updateSessionTitle();
+els.howtoDismiss?.addEventListener('click', () => dismissHowto());
+els.sessionsRefresh?.addEventListener('click', () => refreshDirectoryList());
+startDirectoryPresence();
+window.addEventListener('beforeunload', () => {
+  if (state.role === 'host') {
+    const id = state.hostId || state.peer?.id;
+    if (id) unannounceRoom(id);
+  }
+});
 window.__ysqSnapshot = () => {
   let playerState = null;
   try {

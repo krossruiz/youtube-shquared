@@ -58,6 +58,10 @@
         <span>Your name</span>
         <input id="name-input" type="text" maxlength="24" placeholder="Guest" autocomplete="nickname" />
       </label>
+      <label class="field">
+        <span>Session name</span>
+        <input id="session-name-input" type="text" maxlength="40" placeholder="Friday jam / pizza night…" autocomplete="off" />
+      </label>
       <div class="lobby-actions">
         <button id="create-btn" class="btn primary" type="button">Create room</button>
         <div class="join-row">
@@ -69,6 +73,16 @@
         <input id="pass-host-create" type="checkbox" checked />
         <span>If the host leaves, pass hosting to a random guest</span>
       </label>
+
+      <div id="active-sessions" class="active-sessions" aria-live="polite">
+        <div class="active-sessions-head">
+          <h2>Active sessions</h2>
+          <button id="sessions-refresh-btn" class="btn ghost sessions-refresh" type="button" title="Refresh list">Refresh</button>
+        </div>
+        <p id="sessions-status" class="hint sessions-status">Looking for live rooms…</p>
+        <ul id="sessions-list" class="sessions-list"></ul>
+      </div>
+
       <div class="session-load lobby-session-load">
         <label class="btn ghost load-session-btn" for="load-session-input-lobby">Load session for playback</label>
         <input id="load-session-input-lobby" class="sr-only" type="file" accept="application/json,.json" />
@@ -77,12 +91,25 @@
     </section>
 
     <section id="room" class="panel hidden anim-pop">
+      <aside id="howto-banner" class="howto-banner" role="region" aria-label="How to use">
+        <div class="howto-body">
+          <p class="howto-title">🎨 Quick-start stamp!</p>
+          <ul class="howto-list">
+            <li><strong>Create</strong> a room (name it!) or <strong>Join</strong> with a code / shared link.</li>
+            <li>Hit <strong>Share Link to Room</strong> so pals can hop in.</li>
+            <li>Paste YouTube or playlist links into the <strong>Queue</strong>. Host stamps <strong>Last / Play / Next</strong>.</li>
+            <li>Switch <strong>Chat</strong> &amp; <strong>People</strong> tabs — export a session log to replay later!</li>
+          </ul>
+        </div>
+        <button id="howto-dismiss-btn" class="btn howto-dismiss" type="button" aria-label="Dismiss how-to">Got it!</button>
+      </aside>
       <div class="room-bar">
         <div class="room-meta">
           <button id="copy-link-btn" class="btn share" type="button" title="Share link to room" aria-label="Share link to room">
             <span class="share-full">Share Link to Room</span>
             <span class="share-short" aria-hidden="true">Share</span>
           </button>
+          <p id="session-title" class="session-title">Session: —</p>
           <p id="host-label" class="host-label">Host: —</p>
         </div>
         <div class="rename-wrap desktop-rename">

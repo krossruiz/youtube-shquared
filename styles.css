@@ -160,6 +160,143 @@ input:focus {
 }
 
 .lobby-actions { display: grid; gap: 12px; position: relative; z-index: 1; }
+
+/* —— Active sessions (lobby directory) —— */
+.active-sessions {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 3px dashed rgba(0, 0, 0, 0.18);
+  position: relative;
+  z-index: 1;
+}
+.active-sessions-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.active-sessions-head h2 {
+  margin: 0;
+  font-family: var(--font-display);
+  font-size: 1.35rem;
+  letter-spacing: 0.02em;
+  color: var(--crayon-purple);
+}
+.sessions-refresh {
+  padding: 6px 12px;
+  font-size: 0.85rem;
+  border-radius: 14px;
+}
+.sessions-status {
+  margin: 0 0 10px;
+  font-size: 0.9rem;
+}
+.sessions-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 10px;
+}
+.session-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px 12px;
+  align-items: center;
+  padding: 12px 14px;
+  background: #fffef6;
+  border: var(--fat-border);
+  border-radius: 18px;
+  box-shadow: 3px 3px 0 var(--crayon-blue);
+}
+.session-card-main { min-width: 0; }
+.session-card-title {
+  margin: 0 0 4px;
+  font-weight: 700;
+  font-size: 1.05rem;
+  color: var(--ink);
+  word-break: break-word;
+}
+.session-card-meta {
+  margin: 0;
+  font-size: 0.88rem;
+  color: #444;
+  line-height: 1.35;
+}
+.session-card-meta .who {
+  font-weight: 600;
+  color: var(--crayon-purple);
+}
+.session-card .btn {
+  padding: 10px 14px;
+  white-space: nowrap;
+}
+
+/* —— Session title chip in room —— */
+.session-title {
+  margin: 0;
+  padding: 6px 12px;
+  font-family: var(--font-display);
+  font-size: 0.95rem;
+  letter-spacing: 0.02em;
+  color: #1a1a1a;
+  background: var(--crayon-yellow);
+  border: 3px solid #1a1a1a;
+  border-radius: 14px;
+  box-shadow: 3px 3px 0 var(--crayon-purple);
+  text-shadow: 1px 1px 0 #fff;
+  max-width: min(280px, 55vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* —— How-to banner (start of session) —— */
+.howto-banner {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+  margin: 0 0 14px;
+  padding: 14px 16px;
+  background: linear-gradient(135deg, #fff7c2 0%, #ffe0f0 55%, #d6f5ff 100%);
+  border: var(--fat-border);
+  border-radius: 20px;
+  box-shadow: 4px 4px 0 var(--crayon-orange);
+  position: relative;
+  z-index: 2;
+}
+.howto-banner.hidden { display: none !important; }
+.howto-body { min-width: 0; flex: 1; }
+.howto-title {
+  margin: 0 0 6px;
+  font-family: var(--font-display);
+  font-size: 1.2rem;
+  color: #1a1a1a;
+  letter-spacing: 0.02em;
+}
+.howto-list {
+  margin: 0;
+  padding-left: 1.15rem;
+  display: grid;
+  gap: 4px;
+  font-size: 0.92rem;
+  line-height: 1.4;
+  color: #222;
+  font-weight: 500;
+}
+.howto-list strong { color: var(--crayon-purple); }
+.howto-dismiss {
+  flex-shrink: 0;
+  background: var(--crayon-green);
+  color: #1a1a1a;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 0.9rem;
+}
+
+
 .join-row { display: grid; grid-template-columns: 1fr auto; gap: 10px; }
 .hint {
   color: #444;
@@ -1006,6 +1143,27 @@ body.replay-active #guest-note:not(.hidden) {
   }
   #lobby .hint { margin-top: 10px; font-size: 0.88rem; }
   #lobby .check-row { padding: 10px 12px; margin: 10px 0 4px; font-size: 0.9rem; }
+  .active-sessions { margin-top: 12px; padding-top: 10px; }
+  .active-sessions-head h2 { font-size: 1.15rem; }
+  .session-card {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .session-card .btn { width: 100%; }
+  .howto-banner {
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    margin-bottom: 10px;
+  }
+  .howto-dismiss { width: 100%; }
+  .howto-title { font-size: 1.05rem; }
+  .howto-list { font-size: 0.86rem; }
+  .session-title {
+    font-size: 0.8rem;
+    padding: 4px 8px;
+    max-width: min(200px, 48vw);
+  }
 
   /* Playback bar — collapsed chrome */
   .playback-bar {
