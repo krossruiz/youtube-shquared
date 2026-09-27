@@ -5,6 +5,7 @@ const HOST_TICK_MS = 2000;
 const DEFAULT_VIDEO = 'dQw4w9WgXcQ';
 const HOST_SESSION_KEY = 'ys-host-session';
 const HOST_RECOVER_MS = 2500; // give refreshing hosts time to reclaim their Peer id
+const AV_MAX_PARTICIPANTS = 6; // PeerJS mesh soft limit (each peer sends N−1 streams)
 const HOWTO_DISMISS_KEY = 'ys-howto-dismissed';
 const PERSIST_ROOMS_KEY = 'ys-persist-rooms-v1';
 const DIR_HEARTBEAT_MS = 8000;
@@ -87,6 +88,15 @@ const els = {
   sessionsRefresh: document.getElementById('sessions-refresh-btn'),
   howtoBanner: document.getElementById('howto-banner'),
   howtoDismiss: document.getElementById('howto-dismiss-btn'),
+  avOverlay: document.getElementById('av-overlay'),
+  avGrid: document.getElementById('av-grid'),
+  avDock: document.getElementById('av-dock'),
+  avJoinBtn: document.getElementById('av-join-btn'),
+  avInCallControls: document.getElementById('av-in-call-controls'),
+  avMuteBtn: document.getElementById('av-mute-btn'),
+  avCamBtn: document.getElementById('av-cam-btn'),
+  avLeaveBtn: document.getElementById('av-leave-btn'),
+  avHint: document.getElementById('av-hint'),
 };
 
 const state = {
@@ -151,6 +161,16 @@ const state = {
     statusNote: '',
     mediaApplySeq: 0,
     scrubbing: false,
+  },
+  // WebRTC A/V mesh (PeerJS MediaConnection) — separate from room watch-party membership
+  av: {
+    inCall: false,
+    joining: false,
+    localStream: null,
+    muted: false,
+    camOff: false,
+    members: new Map(), // peerId -> { name, muted, camOff }
+    calls: new Map(), // peerId -> MediaConnection
   },
 };
 
@@ -1961,6 +1981,7 @@ function transferHostThenLeave() {
 }
 
 function leaveRoom() {
+  leaveAvCall({ silent: true });
   logSession('room-leave', { role: state.role, roomId: state.hostId || state.peer?.id }, { sync: false });
   // Empty host leave with "keep open" — park peer + queue, stay discoverable
   if (state.role === 'host' && state.persistWhenEmpty && state.connections.size === 0) {
@@ -2149,6 +2170,11 @@ function applyRename(peerId, newName) {
     state.peers.set(peerId, { name, role: 'guest' });
   }
   rewriteChatNames(peerId, name);
+  if (state.av.members.has(peerId)) {
+    const info = state.av.members.get(peerId);
+    state.av.members.set(peerId, { ...info, name });
+  }
+  updateAvTileState(peerId);
   renderPeers();
 }
 
@@ -2282,6 +2308,478 @@ function applyRemoteState(msg) {
   else run();
 }
 
+
+/* —— WebRTC video call (PeerJS mesh) ——
+ * Watch-party data stays host-star. A/V uses a full mesh of MediaConnections:
+ * the joiner calls every peer already on the call; others answer with their
+ * local stream. Signaling (av-join / leave / state / roster / full) rides the
+ * existing data channels; the host relays guest A/V control messages.
+ * Soft cap AV_MAX_PARTICIPANTS — beyond that uplink (N−1 streams) gets rough.
+ */
+
+function avPeerName(peerId) {
+  if (peerId && state.peer?.id && peerId === state.peer.id) return state.name || 'You';
+  return state.peers.get(peerId)?.name || state.av.members.get(peerId)?.name || 'Guest';
+}
+
+function wirePeerMediaHandlers(peer) {
+  // Per-peer flag — createPeer is also used for the directory broker Peer.
+  if (!peer || peer.__ysqAvWired) return;
+  peer.__ysqAvWired = true;
+  peer.on('call', (call) => {
+    handleIncomingAvCall(call);
+  });
+}
+
+function applyLocalAvTrackState() {
+  const stream = state.av.localStream;
+  if (!stream) return;
+  for (const t of stream.getAudioTracks()) t.enabled = !state.av.muted;
+  for (const t of stream.getVideoTracks()) t.enabled = !state.av.camOff;
+}
+
+async function ensureLocalAvStream() {
+  if (state.av.localStream) {
+    applyLocalAvTrackState();
+    return state.av.localStream;
+  }
+  if (!navigator.mediaDevices?.getUserMedia) {
+    throw new Error('Camera/mic not supported in this browser');
+  }
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: true,
+    video: {
+      facingMode: 'user',
+      width: { ideal: 640 },
+      height: { ideal: 360 },
+    },
+  });
+  state.av.localStream = stream;
+  applyLocalAvTrackState();
+  return stream;
+}
+
+function stopLocalAvStream() {
+  if (!state.av.localStream) return;
+  for (const t of state.av.localStream.getTracks()) {
+    try { t.stop(); } catch { /* ignore */ }
+  }
+  state.av.localStream = null;
+}
+
+function closeAvCall(peerId) {
+  const call = state.av.calls.get(peerId);
+  if (call) {
+    try { call.close(); } catch { /* ignore */ }
+    state.av.calls.delete(peerId);
+  }
+  removeAvTile(peerId);
+}
+
+function closeAllAvCalls() {
+  for (const id of [...state.av.calls.keys()]) closeAvCall(id);
+}
+
+function dropAvPeer(peerId) {
+  if (!peerId) return;
+  state.av.members.delete(peerId);
+  closeAvCall(peerId);
+  renderAvUi();
+}
+
+function resetAvState() {
+  state.av.inCall = false;
+  state.av.joining = false;
+  closeAllAvCalls();
+  stopLocalAvStream();
+  state.av.members.clear();
+  state.av.muted = false;
+  state.av.camOff = false;
+  if (els.avGrid) els.avGrid.innerHTML = '';
+  renderAvUi();
+}
+
+function leaveAvCall({ silent = false } = {}) {
+  const wasIn = state.av.inCall || state.av.joining;
+  const myId = state.peer?.id;
+  state.av.inCall = false;
+  state.av.joining = false;
+  closeAllAvCalls();
+  stopLocalAvStream();
+  if (myId) state.av.members.delete(myId);
+  if (els.avGrid) {
+    // Keep remote tiles only if somehow still tracked — clear all tiles on leave
+    els.avGrid.innerHTML = '';
+  }
+  state.av.muted = false;
+  state.av.camOff = false;
+  if (wasIn && myId) {
+    broadcast({ type: 'av-leave', peerId: myId });
+    if (!silent) toast('Left the video call');
+  }
+  renderAvUi();
+}
+
+function avMembersPayload() {
+  return [...state.av.members.entries()].map(([id, info]) => ({
+    peerId: id,
+    name: info.name || avPeerName(id),
+    muted: !!info.muted,
+    camOff: !!info.camOff,
+  }));
+}
+
+function startAvCallTo(remoteId) {
+  if (!state.av.inCall || !state.av.localStream || !state.peer) return;
+  if (!remoteId || remoteId === state.peer.id) return;
+  if (state.av.calls.has(remoteId)) return;
+  try {
+    const call = state.peer.call(remoteId, state.av.localStream, {
+      metadata: {
+        name: state.name,
+        muted: state.av.muted,
+        camOff: state.av.camOff,
+      },
+    });
+    if (!call) return;
+    wireAvMediaConnection(call, remoteId);
+  } catch (err) {
+    console.warn('av call failed', remoteId, err);
+  }
+}
+
+function wireAvMediaConnection(call, remoteId) {
+  state.av.calls.set(remoteId, call);
+  call.on('stream', (remoteStream) => {
+    upsertAvTile(remoteId, { stream: remoteStream, local: false });
+  });
+  call.on('close', () => {
+    if (state.av.calls.get(remoteId) === call) state.av.calls.delete(remoteId);
+    removeAvTile(remoteId);
+  });
+  call.on('error', (err) => {
+    console.warn('av media error', remoteId, err);
+  });
+}
+
+function handleIncomingAvCall(call) {
+  const remoteId = call.peer;
+  if (!state.av.inCall || !state.av.localStream) {
+    try { call.close(); } catch { /* ignore */ }
+    return;
+  }
+  if (state.av.calls.has(remoteId)) {
+    // Already linked — ignore duplicate (glare)
+    try { call.close(); } catch { /* ignore */ }
+    return;
+  }
+  try {
+    call.answer(state.av.localStream);
+  } catch (err) {
+    console.warn('av answer failed', err);
+    return;
+  }
+  const meta = call.metadata || {};
+  if (!state.av.members.has(remoteId)) {
+    state.av.members.set(remoteId, {
+      name: meta.name || avPeerName(remoteId),
+      muted: !!meta.muted,
+      camOff: !!meta.camOff,
+    });
+  }
+  wireAvMediaConnection(call, remoteId);
+  upsertAvTile(remoteId, { local: false });
+  renderAvUi();
+}
+
+async function joinAvCall() {
+  if (state.av.inCall || state.av.joining) return;
+  if (!state.peer?.id || (state.role !== 'host' && state.role !== 'guest')) {
+    toast('Join a room first');
+    return;
+  }
+  if (state.role === 'guest' && ![...state.connections.values()].some((c) => c.open)) {
+    toast('Still connecting to the room — try Join call again in a sec');
+    return;
+  }
+  // Known remotes already on the call (we are not counted yet)
+  if (state.av.members.size >= AV_MAX_PARTICIPANTS) {
+    toast(`Call is full (max ${AV_MAX_PARTICIPANTS} on mesh)`);
+    return;
+  }
+
+  state.av.joining = true;
+  renderAvUi();
+  try {
+    await ensureLocalAvStream();
+  } catch (err) {
+    console.error(err);
+    state.av.joining = false;
+    renderAvUi();
+    const denied = err?.name === 'NotAllowedError' || err?.name === 'PermissionDeniedError';
+    toast(denied
+      ? 'Camera/mic blocked — allow permissions and try again'
+      : (err?.message || 'Could not open camera/mic'));
+    return;
+  }
+
+  state.av.inCall = true;
+  state.av.joining = false;
+  state.av.members.set(state.peer.id, {
+    name: state.name,
+    muted: state.av.muted,
+    camOff: state.av.camOff,
+  });
+  upsertAvTile(state.peer.id, { local: true, stream: state.av.localStream });
+
+  // Announce first so peers are ready to answer before we place calls
+  broadcast({
+    type: 'av-join',
+    peerId: state.peer.id,
+    name: state.name,
+    muted: state.av.muted,
+    camOff: state.av.camOff,
+  });
+  if (state.role === 'host') {
+    broadcast({ type: 'av-roster', members: avMembersPayload() });
+  }
+
+  // Call everyone we already know is on the call (host may refine via av-roster)
+  for (const remoteId of [...state.av.members.keys()]) {
+    if (remoteId === state.peer.id) continue;
+    try { startAvCallTo(remoteId); } catch (err) { console.warn('av dial', remoteId, err); }
+  }
+
+  renderAvUi();
+  toast('You’re on the video call!');
+}
+
+function toggleAvMute() {
+  if (!state.av.inCall) return;
+  state.av.muted = !state.av.muted;
+  applyLocalAvTrackState();
+  const me = state.av.members.get(state.peer?.id);
+  if (me) {
+    me.muted = state.av.muted;
+    state.av.members.set(state.peer.id, me);
+  }
+  updateAvTileState(state.peer.id);
+  broadcast({
+    type: 'av-state',
+    peerId: state.peer.id,
+    name: state.name,
+    muted: state.av.muted,
+    camOff: state.av.camOff,
+  });
+  renderAvUi();
+}
+
+function toggleAvCam() {
+  if (!state.av.inCall) return;
+  state.av.camOff = !state.av.camOff;
+  applyLocalAvTrackState();
+  const me = state.av.members.get(state.peer?.id);
+  if (me) {
+    me.camOff = state.av.camOff;
+    state.av.members.set(state.peer.id, me);
+  }
+  updateAvTileState(state.peer.id);
+  broadcast({
+    type: 'av-state',
+    peerId: state.peer.id,
+    name: state.name,
+    muted: state.av.muted,
+    camOff: state.av.camOff,
+  });
+  renderAvUi();
+}
+
+function upsertAvTile(peerId, { stream = null, local = false } = {}) {
+  if (!els.avGrid || !peerId) return;
+  let tile = els.avGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
+  if (!tile) {
+    tile = document.createElement('div');
+    tile.className = 'av-tile';
+    tile.dataset.peerId = peerId;
+    tile.setAttribute('role', 'listitem');
+    tile.innerHTML = [
+      '<video class="av-video" playsinline autoplay></video>',
+      '<div class="av-avatar hidden" aria-hidden="true"></div>',
+      '<div class="av-label"></div>',
+      '<div class="av-badges" aria-hidden="true"></div>',
+    ].join('');
+    els.avGrid.appendChild(tile);
+  }
+  tile.classList.toggle('av-local', !!local);
+  const video = tile.querySelector('video');
+  if (video) {
+    if (local) video.muted = true; // avoid local echo
+    const next = stream || (local ? state.av.localStream : null);
+    if (next && video.srcObject !== next) video.srcObject = next;
+    video.play?.().catch(() => { /* autoplay policies */ });
+  }
+  updateAvTileState(peerId);
+}
+
+function updateAvTileState(peerId) {
+  if (!els.avGrid || !peerId) return;
+  const tile = els.avGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
+  if (!tile) return;
+  const isSelf = peerId === state.peer?.id;
+  const info = isSelf
+    ? { name: state.name, muted: state.av.muted, camOff: state.av.camOff }
+    : (state.av.members.get(peerId) || {
+      name: avPeerName(peerId),
+      muted: false,
+      camOff: false,
+    });
+  const label = tile.querySelector('.av-label');
+  const avatar = tile.querySelector('.av-avatar');
+  const video = tile.querySelector('video');
+  const badges = tile.querySelector('.av-badges');
+  if (label) label.textContent = `${info.name || 'Guest'}${isSelf ? ' (you)' : ''}`;
+  if (avatar) {
+    const initial = String(info.name || '?').trim().charAt(0).toUpperCase() || '?';
+    avatar.textContent = initial;
+    avatar.classList.toggle('hidden', !info.camOff);
+  }
+  tile.classList.toggle('cam-off', !!info.camOff);
+  tile.classList.toggle('is-muted', !!info.muted);
+  if (video) video.classList.toggle('hidden', !!info.camOff);
+  if (badges) badges.textContent = info.muted ? '🔇' : '';
+}
+
+function removeAvTile(peerId) {
+  if (!els.avGrid || !peerId) return;
+  const tile = els.avGrid.querySelector(`[data-peer-id="${CSS.escape(peerId)}"]`);
+  if (tile) tile.remove();
+}
+
+function renderAvUi() {
+  const inRoom = state.role === 'host' || state.role === 'guest';
+  const inCall = !!state.av.inCall;
+  if (els.avOverlay) {
+    els.avOverlay.classList.toggle('hidden', !inRoom);
+    els.avOverlay.classList.toggle('av-active', inCall);
+  }
+  if (els.avJoinBtn) {
+    els.avJoinBtn.classList.toggle('hidden', inCall);
+    els.avJoinBtn.disabled = !!state.av.joining;
+    els.avJoinBtn.textContent = state.av.joining ? 'Joining…' : 'Join call 🎥';
+  }
+  if (els.avInCallControls) {
+    els.avInCallControls.classList.toggle('hidden', !inCall);
+  }
+  if (els.avMuteBtn) {
+    els.avMuteBtn.classList.toggle('is-off', !!state.av.muted);
+    els.avMuteBtn.setAttribute('aria-pressed', state.av.muted ? 'true' : 'false');
+    els.avMuteBtn.textContent = state.av.muted ? 'Unmute 🔇' : 'Mute 🎤';
+  }
+  if (els.avCamBtn) {
+    els.avCamBtn.classList.toggle('is-off', !!state.av.camOff);
+    els.avCamBtn.setAttribute('aria-pressed', state.av.camOff ? 'true' : 'false');
+    els.avCamBtn.textContent = state.av.camOff ? 'Cam on 📷' : 'Cam off 🚫';
+  }
+  if (els.avHint) {
+    const n = state.av.members.size;
+    els.avHint.textContent = inCall
+      ? `On call · ${Math.max(n, 1)}/${AV_MAX_PARTICIPANTS} · mesh WebRTC`
+      : `Video mesh · up to ${AV_MAX_PARTICIPANTS} pals`;
+  }
+}
+
+function handleAvJoinMessage(fromId, msg) {
+  const peerId = msg.peerId || fromId;
+  if (!peerId) return;
+
+  if (state.role === 'host') {
+    const already = state.av.members.has(peerId);
+    if (!already && state.av.members.size >= AV_MAX_PARTICIPANTS) {
+      const conn = state.connections.get(fromId);
+      sendTo(conn, { type: 'av-full', max: AV_MAX_PARTICIPANTS });
+      return;
+    }
+  }
+
+  if (peerId !== state.peer?.id) {
+    state.av.members.set(peerId, {
+      name: msg.name || avPeerName(peerId),
+      muted: !!msg.muted,
+      camOff: !!msg.camOff,
+    });
+    if (state.av.inCall) upsertAvTile(peerId, { local: false });
+  }
+
+  if (state.role === 'host') {
+    broadcast({
+      type: 'av-join',
+      peerId,
+      name: msg.name || avPeerName(peerId),
+      muted: !!msg.muted,
+      camOff: !!msg.camOff,
+    }, fromId);
+    const conn = state.connections.get(fromId);
+    sendTo(conn, { type: 'av-roster', members: avMembersPayload() });
+  }
+  renderAvUi();
+}
+
+function handleAvLeaveMessage(fromId, msg) {
+  const peerId = msg.peerId || fromId;
+  if (!peerId || peerId === state.peer?.id) return;
+  state.av.members.delete(peerId);
+  closeAvCall(peerId);
+  if (state.role === 'host') {
+    broadcast({ type: 'av-leave', peerId }, fromId);
+  }
+  renderAvUi();
+}
+
+function handleAvStateMessage(fromId, msg) {
+  const peerId = msg.peerId || fromId;
+  if (!peerId || peerId === state.peer?.id) return;
+  const prev = state.av.members.get(peerId) || { name: avPeerName(peerId) };
+  state.av.members.set(peerId, {
+    name: msg.name || prev.name || avPeerName(peerId),
+    muted: !!msg.muted,
+    camOff: !!msg.camOff,
+  });
+  updateAvTileState(peerId);
+  if (state.role === 'host') {
+    broadcast({
+      type: 'av-state',
+      peerId,
+      name: msg.name || prev.name,
+      muted: !!msg.muted,
+      camOff: !!msg.camOff,
+    }, fromId);
+  }
+}
+
+function handleAvRosterMessage(msg) {
+  for (const m of msg.members || []) {
+    if (!m?.peerId || m.peerId === state.peer?.id) continue;
+    state.av.members.set(m.peerId, {
+      name: m.name || avPeerName(m.peerId),
+      muted: !!m.muted,
+      camOff: !!m.camOff,
+    });
+  }
+  if (state.av.inCall) {
+    for (const remoteId of state.av.members.keys()) {
+      if (remoteId === state.peer?.id) continue;
+      upsertAvTile(remoteId, { local: false });
+      startAvCallTo(remoteId);
+    }
+  }
+  renderAvUi();
+}
+
+function handleAvFullMessage(msg) {
+  toast(`Call is full (max ${msg.max || AV_MAX_PARTICIPANTS} on mesh)`);
+  leaveAvCall({ silent: true });
+}
+
 function handleMessage(fromId, raw) {
   let msg;
   try { msg = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { return; }
@@ -2301,6 +2799,7 @@ function handleMessage(fromId, raw) {
         sendTo(conn, queuePayload());
         sendTo(conn, settingsPayload());
         sendTo(conn, chatHistoryPayload());
+        if (state.av.members.size) sendTo(conn, { type: 'av-roster', members: avMembersPayload() });
         broadcast({ type: 'peer-join', id: fromId, name: msg.name, role: msg.role }, fromId);
         logSession('room-join', {
           role: msg.role || 'guest',
@@ -2336,6 +2835,7 @@ function handleMessage(fromId, raw) {
       if (msg.id) {
         const left = state.peers.get(msg.id);
         state.peers.delete(msg.id);
+        dropAvPeer(msg.id);
         renderPeers();
         logSession('room-leave', {
           role: left?.role || 'guest',
@@ -2515,6 +3015,26 @@ function handleMessage(fromId, raw) {
       if (msg.event) ingestSessionLogEvent(msg.event);
       break;
     }
+    case 'av-join': {
+      handleAvJoinMessage(fromId, msg);
+      break;
+    }
+    case 'av-leave': {
+      handleAvLeaveMessage(fromId, msg);
+      break;
+    }
+    case 'av-state': {
+      handleAvStateMessage(fromId, msg);
+      break;
+    }
+    case 'av-roster': {
+      handleAvRosterMessage(msg);
+      break;
+    }
+    case 'av-full': {
+      handleAvFullMessage(msg);
+      break;
+    }
     default:
       break;
   }
@@ -2528,7 +3048,22 @@ function wireConnection(conn, remoteRoleHint = 'guest') {
     }
     sendTo(conn, { type: 'hello', role: state.role, peerId: state.peer.id, name: state.name });
     if (state.role === 'guest') sendTo(conn, { type: 'request-state' });
+    // If we already hopped on the video call, re-announce over this fresh link
+    if (state.av.inCall && state.peer?.id) {
+      sendTo(conn, {
+        type: 'av-join',
+        peerId: state.peer.id,
+        name: state.name,
+        muted: state.av.muted,
+        camOff: state.av.camOff,
+      });
+      if (state.role === 'host' && state.av.members.size) {
+        sendTo(conn, { type: 'av-roster', members: avMembersPayload() });
+      }
+      if (state.av.members.has(conn.peer)) startAvCallTo(conn.peer);
+    }
     renderPeers();
+    renderAvUi();
     setStatus(state.role === 'host' ? `Host · ${state.connections.size} linked` : 'Connected', 'ok');
   });
 
@@ -2540,6 +3075,7 @@ function wireConnection(conn, remoteRoleHint = 'guest') {
     const left = state.peers.get(conn.peer);
     state.connections.delete(conn.peer);
     state.peers.delete(conn.peer);
+    dropAvPeer(conn.peer);
     if (state.role === 'host') {
       broadcast({ type: 'peer-leave', id: conn.peer });
       logSession('room-leave', {
@@ -2826,6 +3362,7 @@ function showRoom() {
   syncRecordingUI();
   renderPeers();
   renderQueue();
+  renderAvUi();
   maybeShowRecordingNotice();
 }
 
@@ -2956,6 +3493,8 @@ function resumeParkedRoom() {
 }
 
 function destroySession() {
+  leaveAvCall({ silent: true });
+  resetAvState();
   const leavingRoomId = state.role === 'host' ? (state.hostId || state.peer?.id) : null;
   if (leavingRoomId) {
     unannounceRoom(leavingRoomId);
@@ -3654,6 +4193,13 @@ async function startDirectoryPresence({ force = false } = {}) {
   startLocalDirectoryPresence();
   mergeLocalDirectoryIntoState();
   renderActiveSessions();
+  // Local PeerJS broker (?peerlocal=1) — skip cloud/dir Peer to avoid ID fights
+  try {
+    const u = new URL(location.href);
+    if (u.searchParams.get('peerlocal') === '1' || u.searchParams.get('peerhost')) {
+      return;
+    }
+  } catch { /* ignore */ }
   if (state.directory.starting && !force) return;
   if (state.directory.peer && !force) return;
   if (force) destroyDirectoryPeer();
@@ -3686,17 +4232,34 @@ function refreshDirectoryList() {
   }
 }
 
+function peerBrokerOptions() {
+  const opts = {
+    debug: 1,
+    config: {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:global.stun.twilio.com:3478' },
+      ],
+    },
+  };
+  // Optional local PeerJS broker for mesh/dev: ?peerlocal=1 or ?peerhost=&peerport=
+  try {
+    const u = new URL(location.href);
+    const host = u.searchParams.get('peerhost');
+    const local = u.searchParams.get('peerlocal') === '1';
+    if (local || host) {
+      opts.host = host || '127.0.0.1';
+      opts.port = Number(u.searchParams.get('peerport') || 9000);
+      opts.path = u.searchParams.get('peerpath') || '/';
+      opts.secure = u.searchParams.get('peersecure') === '1';
+    }
+  } catch { /* ignore */ }
+  return opts;
+}
+
 function createPeer(preferredId = null) {
   return new Promise((resolve, reject) => {
-    const opts = {
-      debug: 1,
-      config: {
-        iceServers: [
-          { urls: 'stun:stun.l.google.com:19302' },
-          { urls: 'stun:global.stun.twilio.com:3478' },
-        ],
-      },
-    };
+    const opts = peerBrokerOptions();
     const peer = preferredId ? new Peer(String(preferredId), opts) : new Peer(opts);
     const fail = (err) => {
       try { peer.destroy(); } catch { /* ignore */ }
@@ -3705,6 +4268,7 @@ function createPeer(preferredId = null) {
     peer.on('error', fail);
     peer.on('open', (id) => {
       peer.off('error', fail);
+      wirePeerMediaHandlers(peer);
       resolve({ peer, id });
     });
   });
@@ -3725,6 +4289,7 @@ async function createRoomAsHost(preferredId = null, { toastMsg = 'Room created �
   if (!quiet) setStatus(preferredId ? 'Reclaiming host…' : 'Connecting…', 'warn');
   const { peer, id } = await createPeer(preferredId);
   state.peer = peer;
+  wirePeerMediaHandlers(peer);
   state.role = 'host';
   state.hostId = id;
   if (preferredId == null) {
@@ -3807,6 +4372,7 @@ async function joinRoom(roomCode) {
   try {
     const { peer } = await createPeer();
     state.peer = peer;
+    wirePeerMediaHandlers(peer);
     state.role = 'guest';
     state.hostId = code;
     peer.on('error', (err) => {
@@ -4016,6 +4582,11 @@ els.nameModalInput?.addEventListener('keydown', (e) => {
   }
 });
 
+els.avJoinBtn?.addEventListener('click', () => { joinAvCall(); });
+els.avLeaveBtn?.addEventListener('click', () => { leaveAvCall(); });
+els.avMuteBtn?.addEventListener('click', () => { toggleAvMute(); });
+els.avCamBtn?.addEventListener('click', () => { toggleAvCam(); });
+
 // Boot
 els.name.value = randomName();
 syncPreviousChatAvailability();
@@ -4058,6 +4629,17 @@ window.__ysqSnapshot = () => {
       index: state.replay ? state.replay.index : 0,
       elapsedMs: state.replay ? replayElapsedMs() : 0,
       totalMs: state.replay ? replayTotalMs() : 0,
+    },
+    av: {
+      inCall: !!state.av.inCall,
+      members: state.av.members.size,
+      memberIds: [...state.av.members.keys()],
+      calls: state.av.calls.size,
+      callIds: [...state.av.calls.keys()],
+      muted: !!state.av.muted,
+      camOff: !!state.av.camOff,
+      conns: state.connections.size,
+      peerWired: !!(state.peer && state.peer.__ysqAvWired),
     },
   };
 };

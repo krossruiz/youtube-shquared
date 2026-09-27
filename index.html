@@ -107,6 +107,7 @@
             <li>Hit <strong>Share Link to Room</strong> so pals can hop in.</li>
             <li>Paste YouTube or playlist links into the <strong>Queue</strong>. Host stamps <strong>Last / Play / Next</strong>.</li>
             <li>Switch <strong>Chat</strong> &amp; <strong>People</strong> tabs — export a session log to replay later!</li>
+            <li>Stamp <strong>Join call</strong> on the player for a WebRTC video mesh (cam/mic) while YouTube stays in back!</li>
           </ul>
         </div>
         <button id="howto-dismiss-btn" class="btn howto-dismiss" type="button" aria-label="Dismiss how-to">Got it!</button>
@@ -135,6 +136,18 @@
         <div class="player-col">
           <div id="player-wrap">
             <div id="yt-player"></div>
+            <div id="av-overlay" class="av-overlay hidden" aria-live="polite">
+              <div id="av-grid" class="av-grid" role="list" aria-label="Video call participants"></div>
+              <div id="av-dock" class="av-dock">
+                <button id="av-join-btn" class="btn av-btn av-join" type="button">Join call 🎥</button>
+                <div id="av-in-call-controls" class="av-in-call hidden">
+                  <button id="av-mute-btn" class="btn av-btn" type="button" aria-pressed="false">Mute 🎤</button>
+                  <button id="av-cam-btn" class="btn av-btn" type="button" aria-pressed="false">Cam off 🚫</button>
+                  <button id="av-leave-btn" class="btn danger av-btn" type="button">Leave call</button>
+                </div>
+                <p id="av-hint" class="av-hint">Video mesh · up to 6 pals</p>
+              </div>
+            </div>
           </div>
           <div id="host-controls" class="controls hidden">
             <form id="jump-form" class="jump-form" autocomplete="off">

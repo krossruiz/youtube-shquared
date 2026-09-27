@@ -1775,3 +1775,191 @@ body.recording-off .session-log-export {
 .modal-actions .btn {
   min-width: 120px;
 }
+
+/* —— WebRTC video call overlay (Kid Pix bubbles on the player) —— */
+.av-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  pointer-events: none;
+  background: linear-gradient(to top, rgba(26, 26, 26, 0.45) 0%, transparent 42%);
+}
+.av-overlay.av-active {
+  background: linear-gradient(to top, rgba(26, 26, 26, 0.55) 0%, transparent 48%);
+}
+
+.av-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+  align-items: flex-end;
+  padding: 8px 10px 4px;
+  max-height: 58%;
+  overflow: auto;
+  pointer-events: none;
+}
+
+.av-tile {
+  position: relative;
+  width: clamp(88px, 18%, 140px);
+  aspect-ratio: 3 / 4;
+  border-radius: 22px;
+  border: var(--fat-border);
+  box-shadow: 3px 3px 0 #1a1a1a, 0 0 0 3px var(--crayon-pink);
+  overflow: hidden;
+  background: var(--paper);
+  pointer-events: auto;
+  flex: 0 0 auto;
+  animation: peer-bounce 0.35s ease;
+}
+.av-tile.av-local {
+  box-shadow: 3px 3px 0 #1a1a1a, 0 0 0 3px var(--crayon-yellow);
+}
+.av-tile.cam-off {
+  background: conic-gradient(
+    from 40deg,
+    var(--crayon-blue),
+    var(--crayon-purple),
+    var(--crayon-pink),
+    var(--crayon-yellow),
+    var(--crayon-blue)
+  );
+}
+
+.av-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  background: #111;
+  display: block;
+  transform: none;
+}
+.av-tile.av-local .av-video {
+  transform: scaleX(-1);
+}
+
+.av-avatar {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  font-family: var(--font-display);
+  font-size: clamp(1.8rem, 4vw, 2.6rem);
+  color: #fff;
+  text-shadow: 2px 2px 0 #1a1a1a;
+  background: transparent;
+}
+
+.av-label {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  border: 2px solid #1a1a1a;
+  background: var(--paper);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  box-shadow: 2px 2px 0 rgba(0,0,0,0.25);
+}
+
+.av-badges {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  font-size: 0.9rem;
+  line-height: 1;
+  filter: drop-shadow(1px 1px 0 #1a1a1a);
+}
+
+.av-dock {
+  pointer-events: auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px 10px;
+}
+
+.av-btn {
+  padding: 7px 11px;
+  font-size: 0.82rem;
+  border-radius: 14px;
+  box-shadow: 2px 2px 0 #1a1a1a;
+}
+.av-btn.av-join {
+  background: var(--crayon-pink);
+  color: #fff;
+  font-weight: 700;
+}
+.av-btn.is-off {
+  background: var(--crayon-orange);
+  color: #fff;
+}
+.av-in-call {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+.av-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: #fff;
+  text-shadow: 1px 1px 0 #1a1a1a;
+  opacity: 0.95;
+}
+
+@media (max-width: 900px) {
+  .av-grid {
+    gap: 5px;
+    padding: 4px 6px 2px;
+    max-height: 52%;
+  }
+  .av-tile {
+    width: clamp(56px, 22%, 88px);
+    border-radius: 14px;
+    border-width: 3px;
+    box-shadow: 2px 2px 0 #1a1a1a, 0 0 0 2px var(--crayon-pink);
+  }
+  .av-label {
+    left: 3px;
+    right: 3px;
+    bottom: 3px;
+    padding: 1px 4px;
+    font-size: 0.58rem;
+    border-width: 1.5px;
+  }
+  .av-avatar { font-size: 1.35rem; }
+  .av-dock {
+    padding: 3px 6px 6px;
+    gap: 4px;
+  }
+  .av-btn {
+    padding: 5px 8px;
+    font-size: 0.68rem;
+    border-radius: 10px;
+  }
+  .av-hint {
+    font-size: 0.58rem;
+    width: 100%;
+  }
+  /* Keep YouTube readable — call chrome stays a thin strip */
+  .av-overlay {
+    background: linear-gradient(to top, rgba(26, 26, 26, 0.5) 0%, transparent 36%);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .av-tile { animation: none; }
+}

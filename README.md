@@ -30,8 +30,16 @@ vercel --prod
 
 Project is configured for the Vercel hostname `youtubeshquared.vercel.app`.
 
+## Video call
+
+In a room, **Join call** starts a PeerJS **media mesh** over the player (YouTube stays in back). Mute / cam toggles and **Leave call** are separate from leaving the watch-party room.
+
+Soft limit: **6 participants** on the call. Each peer sends N−1 uplink streams (no SFU); past ~6, bandwidth and CPU get rough on typical home networks.
+
+Local mesh debugging can point PeerJS at a broker with `?peerlocal=1` (host `127.0.0.1:9000`) or `?peerhost=&peerport=`.
+
 ## Stack
 
 - YouTube IFrame API
-- PeerJS (WebRTC)
+- PeerJS (WebRTC data + media)
 - Static HTML / CSS / JS
