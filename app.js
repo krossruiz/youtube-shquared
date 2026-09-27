@@ -2659,8 +2659,12 @@ function renderAvUi() {
   const inRoom = state.role === 'host' || state.role === 'guest';
   const inCall = !!state.av.inCall;
   if (els.avOverlay) {
-    els.avOverlay.classList.toggle('hidden', !inRoom);
+    // Tiles only — AV controls live in #av-dock below the player
+    els.avOverlay.classList.toggle('hidden', !inCall);
     els.avOverlay.classList.toggle('av-active', inCall);
+  }
+  if (els.avDock) {
+    els.avDock.classList.toggle('hidden', !inRoom);
   }
   if (els.avJoinBtn) {
     els.avJoinBtn.classList.toggle('hidden', inCall);

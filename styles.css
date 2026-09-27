@@ -1124,13 +1124,13 @@ body.replay-active #guest-note:not(.hidden) {
     max-width: none;
   }
 
-  /* Compact header — one row */
+  /* Compact header — one row, a little air below */
   .top {
     flex-direction: row;
     align-items: center;
     flex-shrink: 0;
-    margin-bottom: 6px;
-    padding: 6px 10px;
+    margin-bottom: 10px;
+    padding: 8px 12px;
     gap: 8px;
     border-radius: 18px;
     box-shadow: 3px 3px 0 #1a1a1a, 0 0 0 4px #ff8a00;
@@ -1237,7 +1237,7 @@ body.replay-active #guest-note:not(.hidden) {
     flex-direction: column;
     overflow: hidden;
     /* Inset so 4px borders + stamp shadows aren't clipped */
-    padding: 10px 10px 8px;
+    padding: 12px 12px 10px;
     border-radius: 18px;
     margin: 0;
   }
@@ -1246,46 +1246,60 @@ body.replay-active #guest-note:not(.hidden) {
     border-radius: 12px;
   }
 
-  /* Compact top chrome: Share · Host · Leave */
+  /* Room chrome: Share …… Leave | session + host chips on second row */
   .room-bar {
     flex-shrink: 0;
-    flex-wrap: nowrap;
-    gap: 6px;
-    margin-bottom: 6px;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas:
+      "share . leave"
+      "session session host";
+    gap: 8px;
+    margin-bottom: 10px;
     align-items: center;
     padding: 0 1px 2px;
   }
   .room-meta {
-    flex: 1;
-    min-width: 0;
-    gap: 6px;
-    flex-wrap: nowrap;
+    display: contents; /* Share / session / host map into grid areas */
   }
   .desktop-rename { display: none !important; }
   .share-full { display: none; }
   .share-short { display: inline; }
   .btn.share {
-    padding: 7px 9px;
-    font-size: 0.8rem;
+    grid-area: share;
+    padding: 6px 9px;
+    font-size: 0.78rem;
     border-radius: 12px;
-    flex-shrink: 0;
+  }
+  #leave-btn {
+    grid-area: leave;
+    padding: 6px 9px;
+    font-size: 0.78rem;
+  }
+  .session-title {
+    grid-area: session;
+    font-size: 0.7rem;
+    padding: 4px 8px;
+    border-width: 2px;
+    border-radius: 10px;
+    box-shadow: 2px 2px 0 var(--crayon-purple);
+    max-width: none;
+    width: max-content;
+    min-width: 0;
   }
   .host-label {
-    padding: 4px 7px;
-    font-size: 0.75rem;
+    grid-area: host;
+    justify-self: end;
+    padding: 4px 8px;
+    font-size: 0.7rem;
     border-width: 2px;
     border-radius: 10px;
     box-shadow: 2px 2px 0 var(--crayon-blue);
     min-width: 0;
+    max-width: min(160px, 46vw);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    flex: 1;
-  }
-  #leave-btn {
-    padding: 7px 9px;
-    font-size: 0.8rem;
-    flex-shrink: 0;
   }
 
   /* Column: player | panels | tabs */
@@ -1294,7 +1308,7 @@ body.replay-active #guest-note:not(.hidden) {
     flex-direction: column;
     flex: 1 1 auto;
     min-height: 0;
-    gap: 6px;
+    gap: 12px;
     grid-template-columns: none;
     grid-template-areas: none;
     align-items: stretch;
@@ -1304,7 +1318,7 @@ body.replay-active #guest-note:not(.hidden) {
     flex: 0 1 auto;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 10px;
     min-width: 0;
     min-height: 0;
   }
@@ -1312,18 +1326,18 @@ body.replay-active #guest-note:not(.hidden) {
   #player-wrap {
     width: 100%;
     aspect-ratio: auto;
-    /* svh so player scales with visible viewport, not layout viewport */
-    height: min(22svh, 48vw, 180px);
-    max-height: min(22svh, 48vw, 180px);
+    /* Slightly smaller so external AV dock + gaps still fit in svh */
+    height: min(20svh, 46vw, 168px);
+    max-height: min(20svh, 46vw, 168px);
     border-radius: 12px;
     box-shadow: 3px 3px 0 var(--crayon-purple);
-    flex-shrink: 1;
+    flex-shrink: 0;
   }
   /* Chat/People need even more list space than Queue+form */
   #room.tab-chat #player-wrap,
   #room.tab-people #player-wrap {
-    height: min(18svh, 42vw, 150px);
-    max-height: min(18svh, 42vw, 150px);
+    height: min(16svh, 40vw, 136px);
+    max-height: min(16svh, 40vw, 136px);
   }
   #player-wrap:hover {
     transform: none;
@@ -1331,7 +1345,7 @@ body.replay-active #guest-note:not(.hidden) {
   }
 
   .controls {
-    gap: 4px;
+    gap: 6px;
     margin-top: 0;
     padding: 0 1px 2px;
     min-width: 0;
@@ -1368,9 +1382,9 @@ body.replay-active #guest-note:not(.hidden) {
   }
 
   .transport {
-    gap: 6px;
+    gap: 8px;
     justify-content: stretch;
-    padding: 1px 1px 4px;
+    padding: 2px 1px 2px;
   }
   .stamp-btn {
     min-width: 0;
@@ -1425,8 +1439,8 @@ body.replay-active #guest-note:not(.hidden) {
     flex-direction: column;
     overflow: hidden;
     margin-top: 0;
-    padding: 8px 10px 10px;
-    border-radius: 12px;
+    padding: 10px 12px 12px;
+    border-radius: 14px;
   }
 
   #room.tab-queue .mobile-panels .queue-block,
@@ -1544,9 +1558,9 @@ body.replay-active #guest-note:not(.hidden) {
   .mobile-tab-bar {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
+    gap: 8px;
     flex-shrink: 0;
-    padding: 4px 2px 6px;
+    padding: 6px 2px 4px;
     margin: 0;
     position: relative;
     z-index: 2;
@@ -1587,31 +1601,43 @@ body.replay-active #guest-note:not(.hidden) {
 @media (max-width: 900px) and (max-height: 740px) {
   body.room-active #app.app-stage {
     padding:
-      calc(4px + env(safe-area-inset-top, 0px))
-      8px
-      calc(4px + env(safe-area-inset-bottom, 0px));
+      calc(5px + env(safe-area-inset-top, 0px))
+      9px
+      calc(5px + env(safe-area-inset-bottom, 0px));
   }
   .top {
-    margin-bottom: 4px;
-    padding: 5px 8px;
+    margin-bottom: 7px;
+    padding: 6px 10px;
   }
   .top .logo { width: 28px; height: 28px; font-size: 0.85rem; }
   .top h1 { font-size: 0.95rem; }
   #room.panel {
-    padding: 8px 8px 6px;
+    padding: 10px 10px 8px;
   }
   #room.panel::before { inset: 5px; }
-  .room-bar { margin-bottom: 4px; gap: 5px; }
-  .layout { gap: 4px; }
-  .player-col { gap: 3px; }
+  .room-bar { margin-bottom: 7px; gap: 6px; }
+  .layout { gap: 7px; }
+  .player-col { gap: 6px; }
   #player-wrap {
-    height: min(18svh, 42vw, 140px);
-    max-height: min(18svh, 42vw, 140px);
+    height: min(16svh, 40vw, 128px);
+    max-height: min(16svh, 40vw, 128px);
   }
   #room.tab-chat #player-wrap,
   #room.tab-people #player-wrap {
-    height: min(14svh, 36vw, 110px);
-    max-height: min(14svh, 36vw, 110px);
+    height: min(13svh, 34vw, 104px);
+    max-height: min(13svh, 34vw, 104px);
+  }
+  .av-dock {
+    padding: 4px 7px;
+    gap: 4px;
+  }
+  .av-btn {
+    padding: 4px 7px;
+    font-size: 0.64rem;
+  }
+  .av-hint { font-size: 0.55rem; }
+  .av-tile {
+    width: clamp(40px, 14%, 58px);
   }
   .jump-form input,
   .mobile-panels .queue-form input,
@@ -1631,11 +1657,11 @@ body.replay-active #guest-note:not(.hidden) {
   .mobile-panels .queue-block,
   .mobile-panels .people-block,
   .mobile-panels .chat-block {
-    padding: 6px 8px 8px;
+    padding: 8px 10px 9px;
   }
   .mobile-panels .now-playing {
     font-size: 0.75rem;
-    margin-bottom: 3px;
+    margin-bottom: 4px;
   }
   .mobile-tab {
     padding: 6px 3px 7px;
@@ -1643,31 +1669,37 @@ body.replay-active #guest-note:not(.hidden) {
     border-radius: 10px;
   }
   .mobile-tab-bar {
-    gap: 5px;
-    padding: 2px 1px 4px;
+    gap: 6px;
+    padding: 4px 1px 3px;
   }
 }
 
 /* Very short visible heights (chrome expanded / SE landscape-tall chrome) */
 @media (max-width: 900px) and (max-height: 640px) {
   .top .logo { display: none; }
-  .top { padding: 4px 8px; margin-bottom: 3px; }
+  .top { padding: 5px 8px; margin-bottom: 5px; }
   .top h1 { font-size: 0.9rem; }
   .pill { padding: 3px 7px; font-size: 0.65rem; }
-  #room.panel { padding: 6px 6px 4px; }
-  .room-bar { margin-bottom: 3px; }
+  #room.panel { padding: 8px 8px 6px; }
+  .room-bar { margin-bottom: 5px; gap: 5px; }
+  .layout { gap: 5px; }
+  .player-col { gap: 5px; }
   .btn.share, #leave-btn { padding: 5px 7px; font-size: 0.72rem; }
-  .host-label { padding: 3px 6px; font-size: 0.68rem; }
+  .host-label, .session-title { padding: 3px 6px; font-size: 0.66rem; }
   #player-wrap {
-    height: min(14svh, 36vw, 100px);
-    max-height: min(14svh, 36vw, 100px);
+    height: min(13svh, 34vw, 96px);
+    max-height: min(13svh, 34vw, 96px);
   }
   #room.tab-chat #player-wrap,
   #room.tab-people #player-wrap {
-    height: min(11svh, 30vw, 84px);
-    max-height: min(11svh, 30vw, 84px);
+    height: min(10svh, 28vw, 78px);
+    max-height: min(10svh, 28vw, 78px);
   }
-  .transport { gap: 4px; padding: 0 1px 2px; }
+  .av-dock { padding: 3px 6px; }
+  .av-btn { padding: 3px 6px; font-size: 0.6rem; border-radius: 8px; }
+  .av-hint { display: none; }
+  .av-tile { width: clamp(36px, 13%, 52px); }
+  .transport { gap: 5px; padding: 0 1px 1px; }
   .stamp-btn { padding: 1px; border-radius: 8px; }
   .stamp-icon { width: 18px; height: 18px; border-radius: 5px; }
   .stamp-icon svg { width: 10px; height: 10px; }
@@ -1783,12 +1815,12 @@ body.recording-off .session-log-export {
   z-index: 3;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
+  justify-content: flex-start;
   pointer-events: none;
-  background: linear-gradient(to top, rgba(26, 26, 26, 0.45) 0%, transparent 42%);
+  background: linear-gradient(to bottom, rgba(26, 26, 26, 0.28) 0%, transparent 40%);
 }
 .av-overlay.av-active {
-  background: linear-gradient(to top, rgba(26, 26, 26, 0.55) 0%, transparent 48%);
+  background: linear-gradient(to bottom, rgba(26, 26, 26, 0.34) 0%, transparent 44%);
 }
 
 .av-grid {
@@ -1796,7 +1828,7 @@ body.recording-off .session-log-export {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
-  align-items: flex-end;
+  align-items: flex-start;
   padding: 8px 10px 4px;
   max-height: 58%;
   overflow: auto;
@@ -1881,14 +1913,22 @@ body.recording-off .session-log-export {
   filter: drop-shadow(1px 1px 0 #1a1a1a);
 }
 
+/* Compact dock BELOW the player (not over video faces) */
 .av-dock {
   pointer-events: auto;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 6px;
-  padding: 6px 10px 10px;
+  gap: 8px;
+  padding: 8px 10px;
+  margin-top: 8px;
+  background: #fff;
+  border: var(--fat-border);
+  border-radius: 14px;
+  box-shadow: 3px 3px 0 var(--crayon-pink);
+  flex-shrink: 0;
 }
+.av-dock.hidden { display: none !important; }
 
 .av-btn {
   padding: 7px 11px;
@@ -1915,48 +1955,73 @@ body.recording-off .session-log-export {
   margin: 0;
   font-size: 0.72rem;
   font-weight: 600;
-  color: #fff;
-  text-shadow: 1px 1px 0 #1a1a1a;
-  opacity: 0.95;
+  color: var(--ink);
+  text-shadow: none;
+  opacity: 0.9;
+  flex: 1 1 auto;
+  min-width: 0;
 }
+
+/* Tiles sit top-right so they don't cover faces mid-frame as much */
 
 @media (max-width: 900px) {
   .av-grid {
-    gap: 5px;
-    padding: 4px 6px 2px;
-    max-height: 52%;
+    gap: 4px;
+    padding: 6px 6px 4px;
+    max-height: 62%;
+    justify-content: flex-end;
+    align-items: flex-start;
   }
   .av-tile {
-    width: clamp(56px, 22%, 88px);
-    border-radius: 14px;
-    border-width: 3px;
+    width: clamp(44px, 16%, 68px);
+    border-radius: 12px;
+    border-width: 2px;
     box-shadow: 2px 2px 0 #1a1a1a, 0 0 0 2px var(--crayon-pink);
   }
   .av-label {
-    left: 3px;
-    right: 3px;
-    bottom: 3px;
-    padding: 1px 4px;
-    font-size: 0.58rem;
+    left: 2px;
+    right: 2px;
+    bottom: 2px;
+    padding: 1px 3px;
+    font-size: 0.52rem;
     border-width: 1.5px;
   }
-  .av-avatar { font-size: 1.35rem; }
+  .av-avatar { font-size: 1.1rem; }
+  .av-badges { top: 3px; right: 3px; font-size: 0.7rem; }
   .av-dock {
-    padding: 3px 6px 6px;
-    gap: 4px;
+    margin-top: 0;
+    padding: 4px 8px;
+    gap: 5px 6px;
+    border-radius: 12px;
+    box-shadow: 2px 2px 0 var(--crayon-pink);
+    /* Single compact strip — hint stays inline when space allows */
+    flex-wrap: nowrap;
+  }
+  .av-in-call {
+    flex-wrap: nowrap;
+    gap: 5px;
   }
   .av-btn {
     padding: 5px 8px;
     font-size: 0.68rem;
     border-radius: 10px;
+    white-space: nowrap;
   }
   .av-hint {
     font-size: 0.58rem;
-    width: 100%;
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
-  /* Keep YouTube readable — call chrome stays a thin strip */
+  /* Light veil only — controls no longer sit on the video */
   .av-overlay {
-    background: linear-gradient(to top, rgba(26, 26, 26, 0.5) 0%, transparent 36%);
+    background: linear-gradient(to bottom, rgba(26, 26, 26, 0.22) 0%, transparent 38%);
+    justify-content: flex-start;
+  }
+  .av-overlay.av-active {
+    background: linear-gradient(to bottom, rgba(26, 26, 26, 0.28) 0%, transparent 42%);
   }
 }
 
